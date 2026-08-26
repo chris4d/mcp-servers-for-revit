@@ -210,11 +210,10 @@ begin
       SL.Add('{');
       SL.Add('    "$schema": "https://opencode.ai/config.json",');
       SL.Add('    "mcp": {');
-      SL.Add('        "servers": {');
-      SL.Add('            "mcp-server-for-revit": {');
-      SL.Add('                "type": "local",');
-      SL.Add('                "command": ["npx", "-y", "mcp-server-for-revit"]');
-      SL.Add('            }');
+      SL.Add('        "mcp-server-for-revit": {');
+      SL.Add('            "type": "local",');
+      SL.Add('            "command": ["npx", "-y", "mcp-server-for-revit"],');
+      SL.Add('            "enabled": true');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -226,8 +225,8 @@ begin
     try
       SL.LoadFromFile(P); C := SL.Text;
       if Pos(ServerKey, C) > 0 then begin Log('opencode already configured'); Exit; end;
-      StringChangeEx(C, '"servers": {',
-        '"servers": {' + #13#10 + '            "mcp-server-for-revit": {' + #13#10 + '                "type": "local",' + #13#10 + '                "command": ["npx", "-y", "mcp-server-for-revit"]' + #13#10 + '            },', True);
+      StringChangeEx(C, '"mcp": {',
+        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["npx", "-y", "mcp-server-for-revit"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
