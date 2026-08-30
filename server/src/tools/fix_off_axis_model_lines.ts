@@ -1,0 +1,57 @@
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { withRevitConnection } from "../utils/ConnectionManager.js";
+
+export function registerFixOffAxisModelLinesTool(server: McpServer) {
+  server.tool(
+    "fix_off_axis_model_lines",
+    "Fix slightly off-axis top-level model lines and curve chains (<Lines>, Room Separation, Area Boundary, Space Separation, Path of Travel) using chained ray-ray closure.",
+    {
+      elementIds: z
+        .union([z.array(z.number()), z.string()])
+        .optional()
+        .describe("List or CSV of model line element IDs to fix. If omitted, scans and fixes all eligible top-level model lines in the model."),
+      minAngleDeg: z
+        .number()
+        .default(0.0000001)
+        .optional()
+        .describe("Minimum angular deviation in degrees (default 0.0000001)"),
+      maxAngleDeg: z
+        .number()
+        .default(0.1)
+        .optional()
+        .describe("Maximum angular deviation in degrees (default 0.1)"),
+    },
+    async (args, _extra) => {
+      try {
+        const response = await withRevitConnection(async (revitClient) => {
+          return await revitClient.sendCommand("fix_off_axis_model_lines", {
+            elementIds: args.elementIds,
+            minAngleDeg: args.minAngleDeg,
+            maxAngleDeg: args.maxAngleDeg,
+          });
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(response, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Fix off-axis model lines failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          ],
+        };
+      }
+    }
+  );
+}
