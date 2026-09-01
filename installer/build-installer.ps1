@@ -67,6 +67,18 @@ if (-not $SkipPluginBuild) {
         Write-Host "`n=== Building Revit $year ($buildConfig) ===" -ForegroundColor Cyan
         dotnet build $slnPath -c $buildConfig --verbosity minimal
         if ($LASTEXITCODE -ne 0) { Write-Host "  Skipped" -ForegroundColor Yellow; continue }
+
+        # Build any *-commandset projects present in the repo (auto-discovered,
+        # so new command set features require no installer edits). Their deploy
+        # targets copy into the plugin's AddIn output directory before staging.
+        Get-ChildItem $RepoRoot -Directory -Filter "*-commandset" | ForEach-Object {
+            $csproj = Get-ChildItem $_.FullName -Filter "*.csproj" | Select-Object -First 1
+            if ($csproj) {
+                Write-Host "  Building $($csproj.BaseName) ($buildConfig)..." -ForegroundColor Cyan
+                dotnet build $csproj.FullName -c $buildConfig --verbosity minimal
+            }
+        }
+
         if (-not (Test-Path $addinOutputDir)) { Write-Host "  Output not found" -ForegroundColor Yellow; continue }
 
         Copy-Item -Path $addinOutputDir -Destination (Join-Path $StagedDir "$year") -Recurse -Force
@@ -406,8 +418,9 @@ $issLines += ''
 $issLines += 'procedure CreateCommandSetPage;'
 $issLines += 'var I: Integer;'
 $issLines += '  SetLabel: TNewStaticText;'
+$issLines += '  Names: array[' + '0..' + ($commandSetNames.Count - 1) + '] of String;'
 $issLines += 'begin'
-$issLines += "  SetPage := CreateCustomPage(wpSelectDir, 'Command Sets', 'Select which Command Sets to install:');"
+$issLines += '  SetPage := CreateCustomPage(wpSelectDir, ''Command Sets'', ''Select which Command Sets to install:'');'
 $issLines += ''
 $issLines += '  SetLabel := TNewStaticText.Create(WizardForm);'
 $issLines += '  SetLabel.Parent := SetPage.Surface;'
@@ -415,14 +428,16 @@ $issLines += '  SetLabel.SetBounds(ScaleX(20), ScaleY(10), ScaleX(400), ScaleY(2
 $issLines += "  SetLabel.Caption := 'All command sets are selected by default. Uncheck any you do not want:';"
 $issLines += '  SetLabel.Font.Style := [fsBold];'
 $issLines += ''
+foreach ($i in 0..($commandSetNames.Count - 1)) {
+    $issLines += "  Names[$i] := '$($commandSetNames[$i])';"
+}
+$issLines += ''
 $issLines += '  for I := 0 to High(SetCBs) do begin'
 $issLines += '    SetCBs[I] := TNewCheckBox.Create(WizardForm);'
 $issLines += '    SetCBs[I].Parent := SetPage.Surface;'
 $issLines += '    SetCBs[I].SetBounds(ScaleX(20), ScaleY(40 + I * 30), ScaleX(600), ScaleY(20));'
-foreach ($i in 0..($commandSetNames.Count - 1)) {
-    $issLines += "    SetCBs[$i].Caption := '$($commandSetNames[$i])';"
-    $issLines += "    SetCBs[$i].Checked := True;"
-}
+$issLines += '    SetCBs[I].Caption := Names[I];'
+$issLines += '    SetCBs[I].Checked := True;'
 $issLines += '  end;'
 $issLines += 'end;'
 $issLines += ''
