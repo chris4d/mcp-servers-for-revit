@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -48,7 +48,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 }
 
                 // Resolve the DWG element (same resolution rules as extract_dwg_curves).
-                Element target = ResolveDwg(doc, DwgNameOrId.Trim(), out string targetName, out string targetKind);
+                Element target = DwgCurveSource.ResolveDwg(doc, DwgNameOrId.Trim(), out string targetName, out string targetKind);
                 if (target == null)
                 {
                     Result = new Dictionary<string, object> { ["error"] = $"No imported or linked DWG matching '{DwgNameOrId}'" };
@@ -71,7 +71,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                         }
                         else if (o is Curve cv)
                         {
-                            string layer = LayerName(doc, cv);
+                            string layer = DwgCurveSource.LayerName(doc, cv);
                             if (!string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) continue;
                             collected.Add(cv);
                             try { zValues.Add(cv.GetEndPoint(0).Z); } catch { }
@@ -164,7 +164,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 {
                     ["source"] = new Dictionary<string, object>
                     {
-                        ["id"] = IdValue(target),
+                        ["id"] = DwgCurveSource.IdValue(target),
                         ["name"] = targetName,
                         ["kind"] = targetKind
                     },
@@ -203,62 +203,10 @@ namespace RevitMCPCommandSet.Services.Dwg
             return true;
         }
 
-        private static string LayerName(Document doc, GeometryObject o)
-        {
-            try
-            {
-                var gs = doc.GetElement(o.GraphicsStyleId) as GraphicsStyle;
-                return gs != null && gs.GraphicsStyleCategory != null ? gs.GraphicsStyleCategory.Name : "";
-            }
-            catch { return ""; }
-        }
-
-        private static long IdValue(Element e)
-        {
-#if REVIT2024_OR_GREATER
-            return e.Id.Value;
-#else
-            return e.Id.IntegerValue;
-#endif
-        }
-
-        private static Element ResolveDwg(Document doc, string query, out string name, out string kind)
-        {
-            var candidates = new List<(Element el, long id, string n, string k)>();
-
-            foreach (ImportInstance ii in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)))
-            {
-                string n = ii.Category?.Name ?? ii.Name;
-                candidates.Add((ii, IdValue(ii), n, "imported"));
-            }
-
-            foreach (RevitLinkInstance rli in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)))
-            {
-                var lt = doc.GetElement(rli.GetTypeId()) as CADLinkType;
-                if (lt == null) continue;
-                candidates.Add((rli, IdValue(rli), lt.Name, "linked"));
-            }
-
-            // By id first
-            if (long.TryParse(query, out long idVal))
-            {
-                var hit = candidates.FirstOrDefault(x => x.id == idVal);
-                if (hit.el != null) { name = hit.n; kind = hit.k; return hit.el; }
-            }
-
-            // Exact name, then partial
-            var byName = candidates.FirstOrDefault(x => string.Equals(x.n, query, StringComparison.OrdinalIgnoreCase));
-            if (byName.el == null)
-                byName = candidates.FirstOrDefault(x => x.n.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
-            if (byName.el != null) { name = byName.n; kind = byName.k; return byName.el; }
-
-            name = null; kind = null;
-            return null;
-        }
-
         public string GetName()
         {
             return "Create Model Lines from DWG Layer";
         }
     }
 }
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -39,7 +39,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     return;
                 }
 
-                var candidates = CollectDwgCandidates(doc);
+                var candidates = DwgCurveSource.CollectCandidates(doc);
 
                 // List mode: no target specified
                 if (string.IsNullOrWhiteSpace(DwgNameOrId))
@@ -104,16 +104,6 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                 double[] P(XYZ p) => new double[] { p.X, p.Y, p.Z };
 
-                string LayerName(GeometryObject o)
-                {
-                    try
-                    {
-                        var gs = doc.GetElement(o.GraphicsStyleId) as GraphicsStyle;
-                        return gs != null && gs.GraphicsStyleCategory != null ? gs.GraphicsStyleCategory.Name : "";
-                    }
-                    catch { return ""; }
-                }
-
                 void Walk(GeometryElement ge)
                 {
                     foreach (var o in ge)
@@ -125,7 +115,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                         }
                         else if (o is Curve cv)
                         {
-                            string layer = LayerName(cv);
+                            string layer = DwgCurveSource.LayerName(doc, cv);
                             if (layer.IndexOf("Sketch", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                             if (layerF != null && !string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -201,7 +191,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["mode"] = "extract",
                     ["source"] = new Dictionary<string, object>
                     {
-                        ["id"] = IdValue(target),
+                        ["id"] = DwgCurveSource.IdValue(target),
                         ["name"] = targetName,
                         ["kind"] = targetKind
                     },
@@ -224,48 +214,10 @@ namespace RevitMCPCommandSet.Services.Dwg
             }
         }
 
-        private static long IdValue(Element e)
-        {
-#if REVIT2024_OR_GREATER
-            return e.Id.Value;
-#else
-            return e.Id.IntegerValue;
-#endif
-        }
-
-        private List<DwgCandidate> CollectDwgCandidates(Document doc)
-        {
-            var result = new List<DwgCandidate>();
-
-            // Imported DWGs
-            foreach (ImportInstance ii in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)))
-            {
-                string name = ii.Category?.Name ?? ii.Name;
-                result.Add(new DwgCandidate { Element = ii, Id = IdValue(ii), Name = name, Kind = "imported" });
-            }
-
-            // Linked CAD DWGs (RevitLinkInstance whose type is a CADLinkType)
-            foreach (RevitLinkInstance rli in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)))
-            {
-                var lt = doc.GetElement(rli.GetTypeId()) as CADLinkType;
-                if (lt == null) continue;
-                result.Add(new DwgCandidate { Element = rli, Id = IdValue(rli), Name = lt.Name, Kind = "linked" });
-            }
-
-            return result;
-        }
-
         public string GetName()
         {
             return "Extract DWG Curves";
         }
-
-        private class DwgCandidate
-        {
-            public Element Element;
-            public long Id;
-            public string Name;
-            public string Kind;
-        }
     }
 }
+

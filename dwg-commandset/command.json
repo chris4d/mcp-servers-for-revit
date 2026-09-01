@@ -17,6 +17,11 @@
       "commandName": "create_model_lines_from_dwg_layer",
       "description": "Draw one DWG layer's curves as Revit model lines (lines, 3-point arcs, or tessellated polylines) on a sketch plane at the layer's median elevation.",
       "assemblyPath": "DwgCommandSet.dll"
+    },
+    {
+      "commandName": "create_grids_from_dwg_layer",
+      "description": "Generate Revit grids from long straight lines on one DWG layer, ordered by angle then position and labeled with a single alphabetic/numeric sequence.",
+      "assemblyPath": "DwgCommandSet.dll"
     }
   ]
 }
