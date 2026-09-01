@@ -2,6 +2,7 @@ using System;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using RevitMCPCommandSet.Services.OffAxis;
+using RevitMCPCommandSet.Utils.OffAxis;
 using RevitMCPSDK.API.Base;
 
 namespace RevitMCPCommandSet.Commands.OffAxis
@@ -24,23 +25,13 @@ namespace RevitMCPCommandSet.Commands.OffAxis
         {
             try
             {
-                if (parameters?["minAngleDeg"] != null && double.TryParse(parameters["minAngleDeg"].ToString(), out double minAng))
-                {
-                    _handler.MinDeviationDeg = minAng;
-                }
-                else
-                {
-                    _handler.MinDeviationDeg = 0.001;
-                }
-
-                if (parameters?["maxAngleDeg"] != null && double.TryParse(parameters["maxAngleDeg"].ToString(), out double maxAng))
-                {
-                    _handler.MaxDeviationDeg = maxAng;
-                }
-                else
-                {
-                    _handler.MaxDeviationDeg = 0.1;
-                }
+                double minAng = 0.001, maxAng = 0.1;
+                if (parameters?["minAngleDeg"] != null && double.TryParse(parameters["minAngleDeg"].ToString(), out double m1)) minAng = m1;
+                if (parameters?["maxAngleDeg"] != null && double.TryParse(parameters["maxAngleDeg"].ToString(), out double m2)) maxAng = m2;
+                string bandErr = OffAxisGeometryUtils.ValidateDeviationBand(minAng, maxAng);
+                if (bandErr != null) throw new Exception(bandErr);
+                _handler.MinDeviationDeg = minAng;
+                _handler.MaxDeviationDeg = maxAng;
 
                 if (RaiseAndWaitForCompletion(30000))
                 {

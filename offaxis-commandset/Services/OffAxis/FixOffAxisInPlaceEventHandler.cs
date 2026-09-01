@@ -18,6 +18,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public HashSet<int> TargetLines { get; set; } = new HashSet<int>();
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -66,6 +68,24 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 var excludedCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Mass", "Toposolid" };
                 var advisoryFormTypes = new HashSet<string>(StringComparer.Ordinal) { "Blend", "Sweep", "Revolve", "GenericForm", "SweptBlend" };
+
+                var dimConstrained = new HashSet<int>();
+                try
+                {
+                    foreach (var dim in new FilteredElementCollector(document).OfClass(typeof(Dimension)).Cast<Dimension>())
+                    {
+                        var refs = dim.References;
+                        if (refs != null)
+                        {
+                            for (int i = 0; i < refs.Size; i++)
+                            {
+                                var el = document.GetElement(refs.get_Item(i));
+                                if (el != null) dimConstrained.Add(el.Id.IntegerValue);
+                            }
+                        }
+                    }
+                }
+                catch { }
 
                 // Warning-driven enumeration
                 var warnings = document.GetWarnings()?.ToList() ?? new List<FailureMessage>();
@@ -334,11 +354,31 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     var ex = document.GetElement(new ElementId(formId)) as Extrusion;
                     if (ex == null) return new { FormId = formId, Status = "SKIP - not an Extrusion", LinesFixed = 0, LinesFailed = 0, Failed = false, LargeFix = false };
                     if (ex.Pinned) return new { FormId = formId, Status = "SKIP - pinned", LinesFixed = 0, LinesFailed = 0, Failed = false, LargeFix = false };
+                    if (dimConstrained.Contains(formId)) return new { FormId = formId, Status = "SKIP - dimension constrained", LinesFixed = 0, LinesFailed = 0, Failed = false, LargeFix = false };
 
                     var rotateFixes = SolveRotate(ex, flagged);
                     var fixes = rotateFixes.Count > 0 ? rotateFixes : SolveForm(ex, flagged);
                     bool usedCorners = rotateFixes.Count == 0;
                     if (fixes.Count == 0) return new { FormId = formId, Status = "SKIP - on axis", LinesFixed = 0, LinesFailed = 0, Failed = false, LargeFix = false };
+
+                    double maxMove = 0;
+                    foreach (var fix in fixes)
+                    {
+                        double d = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1)) * 12.0;
+                        if (d > maxMove) maxMove = d;
+                    }
+                    bool isLarge = maxMove > OffAxisGeometryUtils.FlagMovementInches;
+                    bool overCap = maxMove > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        return new { FormId = formId, Category = cat, Family = fam, Status = "SKIP - movement exceeds maxMoveInches cap", Strategy = usedCorners ? "corner-vertex ray-ray closure" : "midpoint rotation", LinesFixed = 0, LinesFailed = fixes.Count, MovementIn = Math.Round(maxMove, 4), LargeFix = isLarge, Failed = true };
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        return new { FormId = formId, Category = cat, Family = fam, Status = "PREVIEW", Strategy = usedCorners ? "corner-vertex ray-ray closure" : "midpoint rotation", LinesFixed = fixes.Count, LinesFailed = 0, MovementIn = Math.Round(maxMove, 4), LargeFix = isLarge, Failed = false };
+                    }
 
                     var errors = new List<string>();
                     int ok = 0, fail = 0;
@@ -425,7 +465,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         }
                     }
 
-                    double maxMove = 0;
+                    maxMove = 0;
                     foreach (var fix in fixes)
                     {
                         double d = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1)) * 12.0;
@@ -436,7 +476,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         st == TransactionStatus.RolledBack ? "SKIP - constraints (rolled back)" :
                         st == TransactionStatus.Committed && ok > 0 ? "PARTIAL" : "FAIL";
 
-                    bool isLarge = maxMove > OffAxisGeometryUtils.FlagMovementInches;
+                    isLarge = maxMove > OffAxisGeometryUtils.FlagMovementInches;
 
                     return new
                     {
@@ -480,6 +520,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalSkipped = totalSkipped,
                     TotalFailed = totalFailed,
                     LargeFixes = largeFixes,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
                     AdvisoryManualFix = advisoryTargets.Count > 0 ? advisoryTargets : null,
                     Log = fixLog,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null

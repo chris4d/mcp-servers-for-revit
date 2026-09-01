@@ -16,6 +16,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public HashSet<int> TargetLines { get; set; } = new HashSet<int>();
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -269,18 +271,15 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         fixLog.Add(new { ElementId = id, Category = mc.Category?.Name ?? "?", Status = "SKIP - dimension constrained" });
                         continue;
                     }
-                    if (!isTargetedMode)
+                    XYZ u = gl.GetEndPoint(1) - gl.GetEndPoint(0);
+                    double len = u.GetLength();
+                    if (len > 1e-12) u = u / len;
+                    double dev = OffAxisGeometryUtils.WorldDev(u);
+                    if (dev < MinDeviationDeg || dev > MaxDeviationDeg)
                     {
-                        XYZ u = gl.GetEndPoint(1) - gl.GetEndPoint(0);
-                        double len = u.GetLength();
-                        if (len > 1e-12) u = u / len;
-                        double dev = OffAxisGeometryUtils.WorldDev(u);
-                        if (dev < MinDeviationDeg || dev > MaxDeviationDeg)
-                        {
-                            totalSkipped++;
-                            fixLog.Add(new { ElementId = id, Category = mc.Category?.Name ?? "?", Status = "SKIP - on axis", DeviationDeg = Math.Round(dev, 6) });
-                            continue;
-                        }
+                        totalSkipped++;
+                        fixLog.Add(new { ElementId = id, Category = mc.Category?.Name ?? "?", Status = "SKIP - on axis", DeviationDeg = Math.Round(dev, 6) });
+                        continue;
                     }
 
                     var flagged = new HashSet<int> { id };
@@ -298,6 +297,38 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             continue;
                         }
                         fixes = new List<ModelLineFixItem> { new ModelLineFixItem { MC = mc, Snapped = st, OrigP1 = gl.GetEndPoint(1) } };
+                    }
+
+                    double maxMove = 0;
+                    foreach (var fix in fixes)
+                    {
+                        double d = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1)) * 12.0;
+                        if (d > maxMove) maxMove = d;
+                    }
+                    bool isLarge = maxMove > OffAxisGeometryUtils.FlagMovementInches;
+                    bool overCap = maxMove > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        totalSkipped++;
+                        fixLog.Add(new { ElementId = id, Category = mc.Category?.Name ?? "?", Status = "SKIP - movement exceeds maxMoveInches cap", Neighbors = chain.Count - 1, MovementIn = Math.Round(maxMove, 4), CapIn = MaxMoveInches, LargeFix = isLarge });
+                        continue;
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        fixLog.Add(new
+                        {
+                            ElementId = id,
+                            Category = mc.Category?.Name ?? "?",
+                            Status = "PREVIEW",
+                            Neighbors = chain.Count - 1,
+                            LinesFixed = fixes.Count,
+                            MovementIn = Math.Round(maxMove, 4),
+                            LargeFix = isLarge,
+                            Preview = true
+                        });
+                        continue;
                     }
 
                     var errors = new List<string>();
@@ -339,18 +370,10 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         fail = fixes.Count;
                     }
 
-                    double maxMove = 0;
-                    foreach (var fix in fixes)
-                    {
-                        double d = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1)) * 12.0;
-                        if (d > maxMove) maxMove = d;
-                    }
-
                     string status = stt == TransactionStatus.Committed && fail == 0 ? "FIXED" :
                         stt == TransactionStatus.RolledBack ? "SKIP - constraints (rolled back)" :
                         stt == TransactionStatus.Committed && ok > 0 ? "PARTIAL" : "FAIL";
 
-                    bool isLarge = maxMove > OffAxisGeometryUtils.FlagMovementInches;
                     if (isLarge) largeFixes++;
 
                     if (status == "FIXED") totalFixed++;
@@ -378,6 +401,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalFailed = totalFailed,
                     LargeFixes = largeFixes,
                     Targeted = isTargetedMode,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
                     Log = fixLog,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null
                 };

@@ -25,6 +25,17 @@ export function registerFixOffAxisInPlaceTool(server: McpServer) {
         .default(0.1)
         .optional()
         .describe("Maximum angular deviation in degrees (default 0.1)"),
+      maxMoveInches: z
+        .number()
+        .positive()
+        .default(1.0)
+        .optional()
+        .describe("Maximum predicted movement in inches before an element is skipped (default 1.0)"),
+      previewOnly: z
+        .boolean()
+        .default(false)
+        .optional()
+        .describe("When true, report what would be fixed without modifying the model (default false)"),
     },
     async (args, _extra) => {
       try {
@@ -34,6 +45,8 @@ export function registerFixOffAxisInPlaceTool(server: McpServer) {
             lineIds: args.lineIds,
             minAngleDeg: args.minAngleDeg,
             maxAngleDeg: args.maxAngleDeg,
+            maxMoveInches: args.maxMoveInches ?? 1.0,
+            previewOnly: args.previewOnly ?? false,
           });
         });
 

@@ -19,6 +19,23 @@ namespace RevitMCPCommandSet.Utils.OffAxis
         public const double MinDeviationDeg = 0.001;
         public const double MaxDeviationDeg = 0.1;
 
+        /// <summary>
+        /// Default maximum allowed movement (in inches) before a fix is skipped by the safety cap.
+        /// Callers may raise this via the maxMoveInches parameter.
+        /// </summary>
+        public const double DefaultMaxMoveInches = 1.0;
+
+        /// <summary>
+        /// Validates a min/max angular deviation band. Returns an error message, or null if valid.
+        /// </summary>
+        public static string ValidateDeviationBand(double minAng, double maxAng)
+        {
+            if (double.IsNaN(minAng) || double.IsNaN(maxAng)) return "minAngleDeg/maxAngleDeg must be numeric";
+            if (minAng < 0 || maxAng < 0) return "minAngleDeg/maxAngleDeg must be non-negative";
+            if (minAng >= maxAng) return "minAngleDeg must be less than maxAngleDeg";
+            return null;
+        }
+
         private static readonly double InvSqrt2 = 1.0 / Math.Sqrt(2.0);
 
         /// <summary>

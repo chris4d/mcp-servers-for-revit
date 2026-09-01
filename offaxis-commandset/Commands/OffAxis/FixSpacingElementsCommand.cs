@@ -52,6 +52,9 @@ namespace RevitMCPCommandSet.Commands.OffAxis
                 else
                     _handler.MaxMoveInches = 1.0;
 
+                if (parameters?["previewOnly"] != null && bool.TryParse(parameters["previewOnly"].ToString(), out bool pv))
+                    _handler.PreviewOnly = pv;
+
                 if (RaiseAndWaitForCompletion(60000))
                 {
                     return _handler.Result;

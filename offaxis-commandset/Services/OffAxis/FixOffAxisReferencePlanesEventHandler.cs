@@ -16,6 +16,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public HashSet<int> TargetIds { get; set; } = new HashSet<int>();
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -99,15 +101,10 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                     double angle = GetPlaneAngleDeg(rp);
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(angle);
+                    if (dev <= MinDeviationDeg || dev >= MaxDeviationDeg) continue;
 
-                    if (isTargetedMode)
-                    {
-                        if (TargetIds.Contains(rp.Id.IntegerValue)) offAxisRefPlanes.Add(rp);
-                    }
-                    else if (dev > MinDeviationDeg && dev < MaxDeviationDeg)
-                    {
-                        offAxisRefPlanes.Add(rp);
-                    }
+                    if (isTargetedMode && !TargetIds.Contains(rp.Id.IntegerValue)) continue;
+                    offAxisRefPlanes.Add(rp);
                 }
 
                 var rpFixLog = new List<object>();
@@ -138,6 +135,35 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     XYZ freeEnd = rp.FreeEnd;
                     XYZ bubbleEnd = rp.BubbleEnd;
                     double length = freeEnd.DistanceTo(bubbleEnd);
+                    XYZ newFreeEnd = bubbleEnd + newNormal * length;
+                    double movement = freeEnd.DistanceTo(newFreeEnd);
+                    double movementIn = movement * 12.0;
+                    double deviationDeg = OffAxisGeometryUtils.DeviationFromAxis(oldAngle);
+                    bool isLarge = movementIn > OffAxisGeometryUtils.FlagMovementInches || deviationDeg > OffAxisGeometryUtils.FlagDeviationDegrees;
+                    bool overCap = movementIn > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        rpFixLog.Add(new { ElementId = id, Name = rp.Name, Status = "SKIP - movement exceeds maxMoveInches cap", MovementIn = Math.Round(movementIn, 4), CapIn = MaxMoveInches });
+                        continue;
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        rpFixLog.Add(new
+                        {
+                            ElementId = id,
+                            Name = rp.Name,
+                            Status = "PREVIEW",
+                            OldAngle = Math.Round(oldAngle, 4),
+                            NewAngle = Math.Round(newAngle, 4),
+                            DeviationDeg = Math.Round(deviationDeg, 6),
+                            MovementIn = Math.Round(movementIn, 4),
+                            LargeFix = isLarge,
+                            Preview = true
+                        });
+                        continue;
+                    }
 
                     try
                     {
@@ -150,17 +176,12 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             fo.SetForcedModalHandling(false);
                             t.SetFailureHandlingOptions(fo);
 
-                            XYZ newFreeEnd = bubbleEnd + newNormal * length;
                             rp.FreeEnd = newFreeEnd;
 
                             var commitRes = t.Commit();
                             if (commitRes == TransactionStatus.Committed)
                             {
                                 rpsFixed++;
-                                double movement = freeEnd.DistanceTo(newFreeEnd);
-                                double movementIn = movement * 12.0;
-                                double deviationDeg = OffAxisGeometryUtils.DeviationFromAxis(oldAngle);
-                                bool isLarge = movementIn > OffAxisGeometryUtils.FlagMovementInches || deviationDeg > OffAxisGeometryUtils.FlagDeviationDegrees;
                                 if (isLarge) largeFixes++;
 
                                 rpFixLog.Add(new
@@ -204,6 +225,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalFixed = rpsFixed,
                     LargeFixes = largeFixes,
                     Targeted = isTargetedMode,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
                     Log = rpFixLog,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null
                 };

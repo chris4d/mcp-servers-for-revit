@@ -18,6 +18,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
         public int MaxElementsPerRun { get; set; } = 50;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -98,11 +100,68 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 var preprocessor = new SilentFailuresPreprocessor();
 
+                var dimConstrained = new HashSet<int>();
+                try
+                {
+                    foreach (var dim in new FilteredElementCollector(document).OfClass(typeof(Dimension)).Cast<Dimension>())
+                    {
+                        var refs = dim.References;
+                        if (refs != null)
+                        {
+                            for (int i = 0; i < refs.Size; i++)
+                            {
+                                var el = document.GetElement(refs.get_Item(i));
+                                if (el != null) dimConstrained.Add(el.Id.IntegerValue);
+                            }
+                        }
+                    }
+                }
+                catch { }
+
                 SketchFixResult ApplyFixes(int id, string category, Element elem, List<SketchFixItem> fixes)
                 {
                     int linesFixed = 0, linesFailed = 0;
                     var lineErrors = new List<string>();
                     bool wasRolledBack = false;
+
+                    double totalMovement = 0;
+                    double maxMovementIn = 0;
+                    foreach (var fix in fixes)
+                    {
+                        double dist = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1));
+                        totalMovement += dist;
+                        if (dist * 12.0 > maxMovementIn) maxMovementIn = dist * 12.0;
+                    }
+                    bool isLarge = maxMovementIn > OffAxisGeometryUtils.FlagMovementInches;
+                    bool overCap = maxMovementIn > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        return new SketchFixResult
+                        {
+                            ElementId = id,
+                            Category = category,
+                            Status = "SKIP - movement exceeds maxMoveInches cap",
+                            LinesFailed = fixes.Count,
+                            MovementIn = Math.Round(maxMovementIn, 4),
+                            LargeFix = isLarge,
+                            Failed = true
+                        };
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        return new SketchFixResult
+                        {
+                            ElementId = id,
+                            Category = category,
+                            Status = "PREVIEW",
+                            LinesFixed = fixes.Count,
+                            TotalMovement = Math.Round(totalMovement, 8),
+                            MovementIn = Math.Round(maxMovementIn, 4),
+                            LargeFix = isLarge
+                        };
+                    }
 
                     try
                     {
@@ -188,19 +247,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         catch { validationStatus = "validation skipped"; }
                     }
 
-                    double totalMovement = 0;
-                    double maxMovementIn = 0;
-                    foreach (var fix in fixes)
-                    {
-                        double dist = fix.OrigP1.DistanceTo(fix.Snapped.GetEndPoint(1));
-                        totalMovement += dist;
-                        if (dist * 12.0 > maxMovementIn) maxMovementIn = dist * 12.0;
-                    }
-
                     Element typeElem = null;
                     try { typeElem = document.GetElement(elem.GetTypeId()); } catch { }
-
-                    bool isLarge = maxMovementIn > OffAxisGeometryUtils.FlagMovementInches;
 
                     return new SketchFixResult
                     {
@@ -223,6 +271,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 {
                     int id = elem.Id.IntegerValue;
                     if (elem.Pinned) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - pinned", LargeFix = false };
+                    if (dimConstrained.Contains(id)) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - dimension constrained", LargeFix = false };
 
                     var hostedIds = GetHostedElementIds(elem);
                     if (hostedIds.Count > 0)
@@ -361,6 +410,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     int id = roof.Id.IntegerValue;
                     string category = "Roof";
                     if (roof.Pinned) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - pinned", LargeFix = false };
+                    if (dimConstrained.Contains(id)) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - dimension constrained", LargeFix = false };
 
                     var hostedIds = GetHostedElementIds(roof);
                     if (hostedIds.Count > 0)
@@ -475,6 +525,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 var allFloors = new FilteredElementCollector(document).OfClass(typeof(Floor)).WhereElementIsNotElementType().Cast<Floor>().ToList();
                 var allCeilings = new FilteredElementCollector(document).OfClass(typeof(Ceiling)).WhereElementIsNotElementType().Cast<Ceiling>().ToList();
                 var allRoofs = new FilteredElementCollector(document).OfClass(typeof(FootPrintRoof)).WhereElementIsNotElementType().Cast<FootPrintRoof>().ToList();
+                var allCandidates = new List<(int, string, Element)>();
 
                 var fixLog = new List<SketchFixResult>();
                 int totalFixed = 0, totalSkipped = 0, totalFailed = 0;
@@ -493,18 +544,29 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 foreach (var fl in allFloors)
                 {
-                    if (isTargetedMode && !TargetHosts.Contains(fl.Id.IntegerValue)) continue;
-                    Record(ProcessSketchBased(fl, "Floor"));
+                    if (!isTargetedMode || TargetHosts.Contains(fl.Id.IntegerValue))
+                        allCandidates.Add((fl.Id.IntegerValue, "Floor", fl));
                 }
                 foreach (var cl in allCeilings)
                 {
-                    if (isTargetedMode && !TargetHosts.Contains(cl.Id.IntegerValue)) continue;
-                    Record(ProcessSketchBased(cl, "Ceiling"));
+                    if (!isTargetedMode || TargetHosts.Contains(cl.Id.IntegerValue))
+                        allCandidates.Add((cl.Id.IntegerValue, "Ceiling", cl));
                 }
                 foreach (var rf in allRoofs)
                 {
-                    if (isTargetedMode && !TargetHosts.Contains(rf.Id.IntegerValue)) continue;
-                    Record(ProcessRoof(rf));
+                    if (!isTargetedMode || TargetHosts.Contains(rf.Id.IntegerValue))
+                        allCandidates.Add((rf.Id.IntegerValue, "Roof", rf));
+                }
+
+                int truncated = 0;
+                int processed = 0;
+                foreach (var (_, cat, elem) in allCandidates)
+                {
+                    if (processed >= MaxElementsPerRun) { truncated++; continue; }
+                    processed++;
+                    if (cat == "Floor") Record(ProcessSketchBased(elem, "Floor"));
+                    else if (cat == "Ceiling") Record(ProcessSketchBased(elem, "Ceiling"));
+                    else Record(ProcessRoof((FootPrintRoof)elem));
                 }
 
                 Result = new
@@ -514,6 +576,10 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalFailed = totalFailed,
                     LargeFixes = largeFixes,
                     Targeted = isTargetedMode,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
+                    MaxElementsPerRun = MaxElementsPerRun,
+                    Truncated = truncated,
                     Log = fixLog,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null
                 };

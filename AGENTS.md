@@ -64,6 +64,21 @@ Two packages are produced:
 
 The installer exposes a **Command Sets selection step** (pre-selects all) plus an AI-client config step.
 
+### Deployment Gotcha — Installer overwrites AI-client configs
+
+Running the installer re-runs `ConfigureClaudeDesktop` / `ConfigureCursor` / `ConfigureOpencode` in `[Code]`. Critically, `ConfigureOpencode` **overwrites `~/.config/opencode/opencode.json` back to `npx -y mcp-server-for-revit`** — the **broken npm package** that crashes on startup with `Cannot find module 'ajv'` (MCP error 32000). The published `mcp-server-for-revit@1.0.0` was never re-published with the `ajv: ^8.17.1` fix (user is not an npm owner; fix is local-only). So any reinstall breaks the opencode MCP connection until the config is pointed back at the local build:
+
+```jsonc
+// ~/.config/opencode/opencode.json — point at the LOCAL build
+"mcp-server-for-revit": {
+  "type": "local",
+  "command": ["node", "C:\\dev\\mcp-servers-for-revit\\server\\build\\index.js"],
+  "enabled": true
+}
+```
+
+Verify the local server boots with a manual MCP handshake (`node server/build/index.js` from `server/`; respond to `initialize`; 33 tools register). Note: `better-sqlite3` has **no prebuilt binary for Node 26** and this machine lacks node-gyp/Python/VS, so the 3 sqlite-backed tools (`query_stored_data`, `store_project_data`, `store_room_data`) fail to register — the other 33 tools and the connection work fine.
+
 ---
 
 ## Off-Axis Toolkit Knowledge (durable)

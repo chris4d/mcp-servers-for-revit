@@ -15,6 +15,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
         public List<int> TargetIds { get; set; } = new List<int>();
         public double MaxMoveInches { get; set; } = 1.0;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -134,6 +135,19 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     string status = "";
                     int passes = 0;
 
+                    if (PreviewOnly)
+                    {
+                        log.Add(new
+                        {
+                            Id = id,
+                            Category = el.Category?.Name,
+                            DeltaInBefore = Math.Round(dIn0, 4),
+                            Status = "PREVIEW",
+                            Preview = true
+                        });
+                        continue;
+                    }
+
                     for (int pass = 0; pass < 3; pass++)
                     {
                         passes = pass + 1;
@@ -200,6 +214,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     AlreadyOk = okCnt,
                     Skipped = skipCnt,
                     Failed = failCnt,
+                    PreviewOnly = PreviewOnly,
                     Log = log,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null
                 };

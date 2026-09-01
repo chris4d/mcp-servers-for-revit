@@ -16,6 +16,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public HashSet<int> TargetIds { get; set; } = new HashSet<int>();
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -55,15 +57,9 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     if (!(g.Curve is Line ln)) continue;
                     double ang = OffAxisGeometryUtils.LineAngleDeg2D(ln);
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(ang);
-
-                    if (isTargetedMode)
-                    {
-                        if (TargetIds.Contains(g.Id.IntegerValue)) offAxisGrids.Add(g);
-                    }
-                    else if (dev > MinDeviationDeg && dev < MaxDeviationDeg)
-                    {
-                        offAxisGrids.Add(g);
-                    }
+                    if (dev <= MinDeviationDeg || dev >= MaxDeviationDeg) continue;
+                    if (isTargetedMode && !TargetIds.Contains(g.Id.IntegerValue)) continue;
+                    offAxisGrids.Add(g);
                 }
 
                 var gridFixLog = new List<object>();
@@ -98,6 +94,37 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     double deltaDeg = nearestAxisDeg - actualAngleDeg;
                     double deltaRad = deltaDeg * OffAxisGeometryUtils.DegToRad;
 
+                    double len = p0.DistanceTo(p1);
+                    double movement = len * Math.Abs(Math.Sin(deltaRad / 2.0));
+                    double movementIn = movement * 12.0;
+                    double deviationDeg = OffAxisGeometryUtils.DeviationFromAxis(actualAngleDeg);
+                    bool isLarge = movementIn > OffAxisGeometryUtils.FlagMovementInches || deviationDeg > OffAxisGeometryUtils.FlagDeviationDegrees;
+                    bool overCap = movementIn > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        gridFixLog.Add(new { ElementId = id, Name = grid.Name, Status = "SKIP - movement exceeds maxMoveInches cap", MovementIn = Math.Round(movementIn, 4), CapIn = MaxMoveInches });
+                        continue;
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        gridFixLog.Add(new
+                        {
+                            ElementId = id,
+                            Name = grid.Name,
+                            Status = "PREVIEW",
+                            OriginalAngle = Math.Round(actualAngleDeg, 4),
+                            DeltaAngle = Math.Round(deltaDeg, 4),
+                            NewAngle = Math.Round(nearestAxisDeg, 4),
+                            DeviationDeg = Math.Round(deviationDeg, 6),
+                            MovementIn = Math.Round(movementIn, 4),
+                            LargeFix = isLarge,
+                            Preview = true
+                        });
+                        continue;
+                    }
+
                     Line axis = Line.CreateBound(mid, new XYZ(mid.X, mid.Y, mid.Z + 10.0));
 
                     try
@@ -117,11 +144,6 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             if (commitRes == TransactionStatus.Committed)
                             {
                                 gridsFixed++;
-                                double len = p0.DistanceTo(p1);
-                                double movement = len * Math.Abs(Math.Sin(deltaRad / 2.0));
-                                double movementIn = movement * 12.0;
-                                double deviationDeg = OffAxisGeometryUtils.DeviationFromAxis(actualAngleDeg);
-                                bool isLarge = movementIn > OffAxisGeometryUtils.FlagMovementInches || deviationDeg > OffAxisGeometryUtils.FlagDeviationDegrees;
                                 if (isLarge) largeFixes++;
 
                                 gridFixLog.Add(new
@@ -155,6 +177,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalFixed = gridsFixed,
                     LargeFixes = largeFixes,
                     Targeted = isTargetedMode,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
                     Log = gridFixLog,
                     FailuresHandled = preprocessor.Log.Count > 0 ? preprocessor.Log : null
                 };

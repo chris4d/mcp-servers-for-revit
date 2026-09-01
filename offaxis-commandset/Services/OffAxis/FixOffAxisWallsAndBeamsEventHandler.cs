@@ -16,6 +16,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
         public HashSet<int> TargetIds { get; set; } = new HashSet<int>();
         public double MinDeviationDeg { get; set; } = 0.0000001;
         public double MaxDeviationDeg { get; set; } = 0.1;
+        public double MaxMoveInches { get; set; } = OffAxisGeometryUtils.DefaultMaxMoveInches;
+        public bool PreviewOnly { get; set; } = false;
 
         public object Result { get; private set; }
 
@@ -50,6 +52,12 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 if (document == null)
                 {
                     Result = new { Error = "No active document" };
+                    return;
+                }
+
+                if (document.IsReadOnlyFile || document.IsReadOnly || document.IsLinked)
+                {
+                    Result = new { Error = "Document is read-only or linked" };
                     return;
                 }
 
@@ -111,10 +119,12 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 bool IsCandidate(double angleDeg, int elemId)
                 {
-                    if (isTargetedMode) return TargetIds.Contains(elemId);
                     double a = Math.Abs(angleDeg % 90.0);
                     if (a > 45.0) a = 90.0 - a;
-                    return a > MinDeviationDeg && a < MaxDeviationDeg;
+                    if (a <= MinDeviationDeg) return false; // already on axis
+                    if (a >= MaxDeviationDeg) return false; // excessive deviation
+                    if (isTargetedMode) return TargetIds.Contains(elemId);
+                    return true;
                 }
 
                 var fixLog = new List<object>();
@@ -133,7 +143,16 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     var origLine = (Line)lc.Curve;
                     double angle = OffAxisGeometryUtils.LineAngleDeg2D(origLine);
 
-                    if (!IsCandidate(angle, wid)) continue;
+                    if (!IsCandidate(angle, wid))
+                    {
+                        if (isTargetedMode && TargetIds.Contains(wid))
+                        {
+                            double a = Math.Abs(angle % 90.0);
+                            if (a > 45.0) a = 90.0 - a;
+                            skipLog.Add(new { Id = wid, Category = "Wall", Reason = "Requested ID not in deviation band", DeviationDeg = Math.Round(a, 6) });
+                        }
+                        continue;
+                    }
 
                     if (wall.Pinned)
                     {
@@ -151,7 +170,15 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         continue;
                     }
 
+                    XYZ origP0 = origLine.GetEndPoint(0);
                     XYZ origP1 = origLine.GetEndPoint(1);
+                    double wallLen = origP0.DistanceTo(origP1);
+                    if (wallLen < 0.5)
+                    {
+                        skipLog.Add(new { Id = wid, Category = "Wall", Reason = "Wall too short (< 0.5 ft)" });
+                        continue;
+                    }
+
                     if (SharesEndpoint(wid, origP1))
                     {
                         skipLog.Add(new { Id = wid, Category = "Wall", Reason = "Endpoint p1 is joined with another wall" });
@@ -168,6 +195,28 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(angle);
                     double moveIn = origP1.DistanceTo(newLine.GetEndPoint(1)) * 12.0;
                     bool isLarge = moveIn > OffAxisGeometryUtils.FlagMovementInches || dev > OffAxisGeometryUtils.FlagDeviationDegrees;
+                    bool overCap = moveIn > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        skipLog.Add(new { Id = wid, Category = "Wall", Reason = "Movement exceeds maxMoveInches cap", MovementIn = Math.Round(moveIn, 4), CapIn = MaxMoveInches });
+                        continue;
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        fixLog.Add(new
+                        {
+                            Id = wid,
+                            Category = "Wall",
+                            TypeName = wall.WallType?.Name ?? "?",
+                            MovementIn = Math.Round(moveIn, 4),
+                            DeviationDeg = Math.Round(dev, 4),
+                            LargeFix = isLarge,
+                            Preview = true
+                        });
+                        continue;
+                    }
 
                     try
                     {
@@ -215,7 +264,16 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     var origLine = (Line)lc.Curve;
                     double angle = OffAxisGeometryUtils.LineAngleDeg2D(origLine);
 
-                    if (!IsCandidate(angle, bid)) continue;
+                    if (!IsCandidate(angle, bid))
+                    {
+                        if (isTargetedMode && TargetIds.Contains(bid))
+                        {
+                            double a = Math.Abs(angle % 90.0);
+                            if (a > 45.0) a = 90.0 - a;
+                            skipLog.Add(new { Id = bid, Category = "Beam", Reason = "Requested ID not in deviation band", DeviationDeg = Math.Round(a, 6) });
+                        }
+                        continue;
+                    }
 
                     if (beam.Pinned)
                     {
@@ -225,6 +283,13 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     if (dimConstrained.Contains(bid))
                     {
                         skipLog.Add(new { Id = bid, Category = "Beam", Reason = "Referenced by dimension constraint" });
+                        continue;
+                    }
+
+                    double beamLen = origLine.Length;
+                    if (beamLen < 0.5)
+                    {
+                        skipLog.Add(new { Id = bid, Category = "Beam", Reason = "Beam too short (< 0.5 ft)" });
                         continue;
                     }
 
@@ -238,6 +303,28 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(angle);
                     double moveIn = origLine.GetEndPoint(1).DistanceTo(newLine.GetEndPoint(1)) * 12.0;
                     bool isLarge = moveIn > OffAxisGeometryUtils.FlagMovementInches || dev > OffAxisGeometryUtils.FlagDeviationDegrees;
+                    bool overCap = moveIn > MaxMoveInches;
+
+                    if (overCap)
+                    {
+                        skipLog.Add(new { Id = bid, Category = "Beam", Reason = "Movement exceeds maxMoveInches cap", MovementIn = Math.Round(moveIn, 4), CapIn = MaxMoveInches });
+                        continue;
+                    }
+
+                    if (PreviewOnly)
+                    {
+                        fixLog.Add(new
+                        {
+                            Id = bid,
+                            Category = "Beam",
+                            TypeName = beam.Symbol?.Name ?? "?",
+                            MovementIn = Math.Round(moveIn, 4),
+                            DeviationDeg = Math.Round(dev, 4),
+                            LargeFix = isLarge,
+                            Preview = true
+                        });
+                        continue;
+                    }
 
                     try
                     {
@@ -283,6 +370,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     TotalSkipped = skipLog.Count,
                     TotalFailed = failLog.Count,
                     LargeFixes = largeFixes,
+                    PreviewOnly = PreviewOnly,
+                    MaxMoveInches = MaxMoveInches,
                     FixedElements = fixLog,
                     SkippedElements = skipLog.Count > 0 ? skipLog : null,
                     FailedElements = failLog.Count > 0 ? failLog : null,
