@@ -1,0 +1,17 @@
+{
+  "name": "DwgCommandSet",
+  "description": "DWG import/link interrogation toolkit for Revit: extract curve geometry from imported or linked DWG files",
+  "developer": {
+    "name": "Scott Mitchell Studio",
+    "email": "chris@scottmitchellstudio.com",
+    "website": "https://scottmitchellstudio.com",
+    "organization": "Scott Mitchell Studio"
+  },
+  "commands": [
+    {
+      "commandName": "extract_dwg_curves",
+      "description": "Extract curve geometry (layer, type, endpoints, arc/ellipse parameters, tessellated polyline) from an imported or linked DWG. Omit dwgNameOrId to list available DWGs.",
+      "assemblyPath": "DwgCommandSet.dll"
+    }
+  ]
+}
