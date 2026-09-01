@@ -22,6 +22,11 @@
       "commandName": "create_grids_from_dwg_layer",
       "description": "Generate Revit grids from long straight lines on one DWG layer, ordered by angle then position and labeled with a single alphabetic/numeric sequence.",
       "assemblyPath": "DwgCommandSet.dll"
+    },
+    {
+      "commandName": "create_walls_from_dwg_layer",
+      "description": "Generate Revit walls from paired face lines on one DWG layer: parallel pairs within a thickness range map to the nearest wall type by thickness; short jamb pairs and door-swing spans are rejected.",
+      "assemblyPath": "DwgCommandSet.dll"
     }
   ]
 }
