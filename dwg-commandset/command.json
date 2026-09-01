@@ -12,6 +12,11 @@
       "commandName": "extract_dwg_curves",
       "description": "Extract curve geometry (layer, type, endpoints, arc/ellipse parameters, tessellated polyline) from an imported or linked DWG. Omit dwgNameOrId to list available DWGs.",
       "assemblyPath": "DwgCommandSet.dll"
+    },
+    {
+      "commandName": "create_model_lines_from_dwg_layer",
+      "description": "Draw one DWG layer's curves as Revit model lines (lines, 3-point arcs, or tessellated polylines) on a sketch plane at the layer's median elevation.",
+      "assemblyPath": "DwgCommandSet.dll"
     }
   ]
 }
