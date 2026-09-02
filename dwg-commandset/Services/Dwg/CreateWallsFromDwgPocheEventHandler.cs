@@ -1,0 +1,572 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using RevitMCPCommandSet.Services.Dwg;
+using RevitMCPCommandSet.Utils.Dwg;
+using RevitMCPSDK.API.Interfaces;
+
+namespace RevitMCPCommandSet.Services.Dwg
+{
+    /// <summary>
+    /// Mutating handler that generates Revit walls from HATCH BOUNDARY loops
+    /// (poche regions) in a DWG import. Layer assignment is unreliable in messy
+    /// CAD imports, so this mode ignores layer intent: it scans every closed
+    /// polyline loop the import exposes (hatch boundaries land as closed
+    /// polylines), merges consecutive collinear edges within each loop into
+    /// straight runs, and pairs runs of the same loop as the two faces of a
+    /// wall. Centerline pieces from different loops that are collinear (same
+    /// circular-mean angle within tolerance, same perpendicular offset, small
+    /// gap) merge independently, and duplicates collapse. Thickness imposes the
+    /// 2in..max wall band, so room-sized loops never pair. Piece thickness maps
+    /// to the nearest Revit wall type by compound width. Short centerlines are
+    /// rejected as jamb linework; door-swing arcs optionally reject short
+    /// centerlines near detected jambs.
+    /// </summary>
+    public class CreateWallsFromDwgPocheEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
+    {
+        private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
+
+        public string DwgNameOrId { get; set; }
+        public string PocheLayer { get; set; } = "";
+        public double HeightFt { get; set; } = 10.0;
+        public double MaxWallThicknessFt { get; set; } = 3.0;
+        public double MinWallLengthFt { get; set; } = 3.5;
+        public string WallTypeName { get; set; }
+        public bool ExcludeDoorArcs { get; set; } = true;
+        public long LevelId { get; set; } = -1;
+        public int MaxWalls { get; set; } = 200;
+
+        // Tunables (internal; revisit per-DWG if needed).
+        private const double MinWallThicknessFt = 2.0 / 12.0; // 2"
+        private const double RunAngleTolDeg = 2.0;             // consecutive-edge collinearity in a loop
+        private const double RailTolFt = 0.05;                 // collinear offset tolerance
+        private const double PairAngleTolDeg = 2.0;            // face pairing parallelism
+        private const double MinOverlapFrac = 0.7;
+        private const double ClusterAngleTolRad = 2.0 * Math.PI / 180.0; // piece clustering
+        private const double MergeGapFt = 0.5;                 // independent collinear merge gap
+        private const double LoopCloseTolFt = 0.01;
+        private const double MinRunFt = 0.3;                   // debris threshold for a face run
+        private const double JambSnapFt = 0.35;
+
+        public object Result { get; private set; }
+
+        public bool WaitForCompletion(int timeoutMilliseconds = 180000)
+        {
+            _resetEvent.Reset();
+            return _resetEvent.WaitOne(timeoutMilliseconds);
+        }
+
+        private class WallPair
+        {
+            public XYZ CenterStart;
+            public XYZ CenterEnd;
+            public double Thickness;
+            public double Length => CenterStart.DistanceTo(CenterEnd);
+        }
+
+        public void Execute(UIApplication app)
+        {
+            try
+            {
+                var doc = app.ActiveUIDocument?.Document;
+                if (doc == null)
+                {
+                    Result = new Dictionary<string, object> { ["error"] = "No active document" };
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(DwgNameOrId))
+                {
+                    Result = new Dictionary<string, object> { ["error"] = "dwgNameOrId is required" };
+                    return;
+                }
+
+                var target = DwgCurveSource.ResolveDwg(doc, DwgNameOrId.Trim(), out string targetName, out string targetKind);
+                if (target == null)
+                {
+                    Result = new Dictionary<string, object> { ["error"] = $"No imported or linked DWG matching '{DwgNameOrId}'" };
+                    return;
+                }
+
+                string layerFilter = string.IsNullOrWhiteSpace(PocheLayer) ? null : PocheLayer.Trim();
+
+                int inspectedPolylines = 0, degenerateVertices = 0, openLoops = 0;
+                var loops = new List<List<XYZ>>();
+                var layerHistogram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var zValues = new List<double>();
+
+                void Walk(GeometryElement ge)
+                {
+                    foreach (var o in ge)
+                    {
+                        var gi = o as GeometryInstance;
+                        if (gi != null)
+                        {
+                            var inst = gi.GetInstanceGeometry();
+                            if (inst != null) Walk(inst);
+                            continue;
+                        }
+                        var pl = o as PolyLine;
+                        if (pl == null) continue;
+
+                        var gs2 = doc.GetElement(o.GraphicsStyleId) as GraphicsStyle;
+                        string layerName = gs2 != null ? gs2.GraphicsStyleCategory.Name : "";
+                        if (layerFilter != null && !string.Equals(layerName, layerFilter, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        inspectedPolylines++;
+                        if (layerHistogram.ContainsKey(layerName)) layerHistogram[layerName]++; else layerHistogram[layerName] = 1;
+
+                        IList<XYZ> pts = pl.GetCoordinates();
+                        if (pts.Count < 3) { degenerateVertices++; continue; }
+
+                        // Closed test on the RAW vertex list (PolyLine.GetCoordinates
+                        // repeats the first vertex at the end for closed rings).
+                        if (pts[0].DistanceTo(pts[pts.Count - 1]) >= LoopCloseTolFt) { openLoops++; continue; }
+
+                        var vs = new List<XYZ>();
+                        foreach (var p in pts)
+                        {
+                            if (vs.Count > 0 && vs[vs.Count - 1].DistanceTo(p) < 0.01) continue;
+                            vs.Add(p);
+                        }
+                        if (vs.Count >= 2 && vs[0].DistanceTo(vs[vs.Count - 1]) < 0.01) vs.RemoveAt(vs.Count - 1);
+                        if (vs.Count < 3) { degenerateVertices++; continue; }
+
+                        foreach (var p in vs) zValues.Add(p.Z);
+                        loops.Add(vs);
+                    }
+                }
+                var geo = target.get_Geometry(new Options());
+                if (geo != null) Walk(geo);
+
+                if (loops.Count == 0)
+                {
+                    Result = new Dictionary<string, object>
+                    {
+                        ["error"] = layerFilter == null
+                            ? "No closed polyline loops found in the DWG"
+                            : $"No closed loops found on layer '{PocheLayer}' of '{targetName}'",
+                        ["inspectedPolylines"] = inspectedPolylines,
+                        ["degenerate"] = degenerateVertices
+                    };
+                    return;
+                }
+
+                // ---- per-loop: straight runs + within-loop face pairing ----
+                double minT = MinWallThicknessFt;
+                double maxT = MaxWallThicknessFt;
+                var centerlinePieces = new List<double[]>(); // sX,sY,eX,eY,thick
+                int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;
+
+                foreach (var vs in loops)
+                {
+                    int n = vs.Count;
+                    if (n < 3) continue;
+
+                    // Merge consecutive collinear edges into straight runs.
+                    // NOTE: rings come deduped WITHOUT the repeated closing
+                    // vertex — the ring edge wraps via (k+1)%n.
+                    var runs = new List<(XYZ s, XYZ e)>();
+                    int i = 0;
+                    while (i < n)
+                    {
+                        XYZ d0 = vs[(i + 1) % n] - vs[i];
+                        double L0 = d0.GetLength();
+                        if (L0 < 1e-9) { i++; continue; }
+                        XYZ dirCur = d0 / L0;
+                        double lenCur = L0;
+                        int k = i;
+                        while (k + 1 < n)
+                        {
+                            XYZ n0 = vs[k + 1], n1 = vs[(k + 2) % n];
+                            XYZ dN = n1 - n0;
+                            double LN = dN.GetLength();
+                            if (LN < 1e-9) break;
+                            XYZ uN = dN / LN;
+                            double dotAbs = Math.Abs(dirCur.DotProduct(uN));
+                            double angDev = Math.Acos(Math.Min(1.0, dotAbs)) * 180.0 / Math.PI;
+                            bool sameDir = angDev <= RunAngleTolDeg;
+                            if (sameDir)
+                            {
+                                var vv = n0 - vs[i];
+                                var perp = vv - dirCur * vv.DotProduct(dirCur);
+                                if (perp.GetLength() > RailTolFt) sameDir = false;
+                            }
+                            if (!sameDir) break;
+                            if (dirCur.DotProduct(uN) < 0) dirCur = dirCur.Negate();
+                            lenCur += LN;
+                            k++;
+                        }
+                        if (lenCur >= MinRunFt)
+                        {
+                            runs.Add((vs[i], vs[(k + 1) % n]));
+                            straightRuns++;
+                        }
+                        i = k + 1;
+                    }
+
+                    // Pair runs within the loop as wall faces.
+                    for (int a = 0; a < runs.Count; a++)
+                    {
+                        var sa = runs[a].s;
+                        var ea = runs[a].e;
+                        var da = ea - sa;
+                        double la = da.GetLength();
+                        if (la < 1e-9) continue;
+                        var ua = da / la;
+
+                        for (int b = a + 1; b < runs.Count; b++)
+                        {
+                            var sb = runs[b].s;
+                            var eb = runs[b].e;
+                            var db = eb - sb;
+                            double lb = db.GetLength();
+                            if (lb < 1e-9) continue;
+                            var ub = db / lb;
+
+                            double dotAbs2 = Math.Abs(ua.DotProduct(ub));
+                            double dev2 = Math.Acos(Math.Min(1.0, dotAbs2)) * 180.0 / Math.PI;
+                            if (dev2 > PairAngleTolDeg) continue;
+
+                            var mb = (sb + eb) * 0.5;
+                            var vv = mb - sa;
+                            var perp = vv - ua * vv.DotProduct(ua);
+                            double thick = perp.GetLength();
+                            if (thick < minT || thick > maxT) { pairsNoThickness++; continue; }
+
+                            double tb0 = (sb - sa).DotProduct(ua) / la;
+                            double tb1 = (eb - sa).DotProduct(ua) / la;
+                            double lo = Math.Max(0.0, Math.Min(tb0, tb1));
+                            double hi = Math.Min(1.0, Math.Max(tb0, tb1));
+                            if (hi <= lo) continue;
+                            double overlapLen = (hi - lo) * la;
+                            double minLen = Math.Min(la, lb);
+                            if (overlapLen / minLen < MinOverlapFrac) { pairsNoOverlap++; continue; }
+
+                            // Centerline: mean of point on run a and its projection on run b.
+                            var pStart = sa + da * lo;
+                            var projS = sb + ub * (pStart - sb).DotProduct(ub);
+                            var c0 = (pStart + projS) * 0.5;
+                            var pEnd = sa + da * hi;
+                            var projE = sb + ub * (pEnd - sb).DotProduct(ub);
+                            var c1 = (pEnd + projE) * 0.5;
+
+                            centerlinePieces.Add(new[] { c0.X, c0.Y, c1.X, c1.Y, thick, dev2 });
+                            pairsMade++;
+                        }
+                    }
+                }
+
+                // ---- independent collinear merge ----
+                var merged = MergeCollinear(centerlinePieces);
+
+                // ---- level / wall types / build ----
+                var wallTypes = new FilteredElementCollector(doc)
+                    .OfClass(typeof(WallType)).WhereElementIsElementType()
+                    .Cast<WallType>().ToList();
+                if (wallTypes.Count == 0)
+                {
+                    Result = new Dictionary<string, object> { ["error"] = "No wall types in document" };
+                    return;
+                }
+                WallType forcedType = null;
+                if (!string.IsNullOrWhiteSpace(WallTypeName))
+                {
+                    var q = WallTypeName.Trim();
+                    forcedType = wallTypes.FirstOrDefault(wt => string.Equals(wt.Name, q, StringComparison.OrdinalIgnoreCase))
+                              ?? wallTypes.FirstOrDefault(wt => wt.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (forcedType == null)
+                    {
+                        Result = new Dictionary<string, object> { ["error"] = $"No wall type matching '{WallTypeName}'" };
+                        return;
+                    }
+                }
+
+                double z = 0;
+                if (zValues.Count > 0)
+                {
+                    zValues.Sort();
+                    z = zValues[zValues.Count / 2];
+                }
+                Level level = null;
+                if (LevelId > 0) level = doc.GetElement(new ElementId(LevelId)) as Level;
+                if (level == null)
+                    level = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                        .OrderBy(l => Math.Abs(l.Elevation - z)).FirstOrDefault();
+                if (level == null)
+                {
+                    Result = new Dictionary<string, object> { ["error"] = "No level found in document" };
+                    return;
+                }
+
+                List<XYZ> jambPoints = null;
+                if (ExcludeDoorArcs)
+                {
+                    jambPoints = CollectDoorJambPoints(target, doc);
+                }
+
+                var preprocessor = new SilentWarningsPreprocessor();
+                var createdIds = new List<long>();
+                var typeSummary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                int created = 0, rejectedJamb = 0, doorArcRejected = 0, buildFailed = 0;
+
+                using (var trans = new Transaction(doc, "Create Walls from DWG Poche"))
+                {
+                    var fo = trans.GetFailureHandlingOptions();
+                    trans.SetFailureHandlingOptions(fo.SetFailuresPreprocessor(preprocessor));
+                    trans.Start();
+
+                    foreach (var pair in merged)
+                    {
+                        if (created >= MaxWalls) break;
+
+                        if (pair.Length < MinWallLengthFt) { rejectedJamb++; continue; }
+
+                        if (ExcludeDoorArcs && jambPoints != null &&
+                            pair.Length < MinWallLengthFt * 2.0 &&
+                            NearJamb(pair.CenterStart, jambPoints) && NearJamb(pair.CenterEnd, jambPoints))
+                        {
+                            doorArcRejected++;
+                            continue;
+                        }
+
+                        var wt = forcedType;
+                        if (wt == null)
+                            wt = wallTypes.OrderBy(w => Math.Abs(w.Width - pair.Thickness)).First();
+
+                        try
+                        {
+                            var centerLine = Line.CreateBound(pair.CenterStart, pair.CenterEnd);
+                            var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
+                            if (wall != null)
+                            {
+                                createdIds.Add(DwgCurveSource.IdValue(wall));
+                                created++;
+                                string tn = wt.Name;
+                                if (typeSummary.ContainsKey(tn)) typeSummary[tn]++;
+                                else typeSummary[tn] = 1;
+                            }
+                            else buildFailed++;
+                        }
+                        catch { buildFailed++; }
+                    }
+
+                    trans.Commit();
+                }
+
+                Result = new Dictionary<string, object>
+                {
+                    ["source"] = new Dictionary<string, object>
+                    {
+                        ["id"] = DwgCurveSource.IdValue(target),
+                        ["name"] = targetName,
+                        ["kind"] = targetKind
+                    },
+                    ["pocheLayer"] = layerFilter ?? "(all layers)",
+                    ["level"] = new Dictionary<string, object> { ["id"] = DwgCurveSource.IdValue(level), ["name"] = level.Name },
+                    ["heightFt"] = HeightFt,
+                    ["inspectedPolylines"] = inspectedPolylines,
+                    ["openLoops"] = openLoops,
+                    ["closedLoops"] = loops.Count,
+                    ["layerHistogram"] = layerHistogram,
+                    ["straightRuns"] = straightRuns,
+                    ["facePairs"] = pairsMade,
+                    ["rejectedPairsThickness"] = pairsNoThickness,
+                    ["rejectedPairsOverlap"] = pairsNoOverlap,
+                    ["mergedCenterlines"] = merged.Count,
+                    ["wallsCreated"] = created,
+                    ["rejectedJamb"] = rejectedJamb,
+                    ["doorArcRejected"] = doorArcRejected,
+                    ["buildFailed"] = buildFailed,
+                    ["minWallLengthFt"] = MinWallLengthFt,
+                    ["typeSummary"] = typeSummary,
+                    ["createdIds"] = createdIds,
+                    ["suppressedMessages"] = preprocessor.Log
+                };
+            }
+            catch (Exception ex)
+            {
+                Result = new Dictionary<string, object> { ["error"] = ex.Message, ["stack"] = ex.StackTrace };
+            }
+            finally
+            {
+                _resetEvent.Set();
+            }
+        }
+
+        // MergeCollinear below does the cross-loop collinear merge of the
+        // centerline pieces produced above: pieces cluster by angle (wrap-safe
+        // circular mean) then merge within a cluster by perpendicular offset
+        // (RailTolFt) and along-track gap (MergeGapFt). Seam-split runs and
+        // opening-split pieces rejoin here; duplicates collapse because a
+        // redrawn piece with the same v and overlapping u loses to the longer
+        // rail already in the chain.
+        private List<WallPair> MergeCollinear(List<double[]> pieces)
+        {
+            var wallPairs = new List<WallPair>();
+            var items = pieces
+                .Select((p, idx) => new
+                {
+                    ang = Math.Atan2(p[3] - p[1], p[2] - p[0]) < 0
+                        ? Math.Atan2(p[3] - p[1], p[2] - p[0]) + Math.PI
+                        : Math.Atan2(p[3] - p[1], p[2] - p[0]),
+                    p // [sX, sY, eX, eY, thick]
+                })
+                .OrderBy(it => it.ang)
+                .ToList();
+
+            var clusters = new List<List<double[]>>();
+            var curCluster = new List<double[]>();
+            double curAng = -1;
+            foreach (var it in items)
+            {
+                if (curCluster.Count == 0 || it.ang - curAng <= ClusterAngleTolRad)
+                {
+                    curCluster.Add(it.p);
+                    if (curCluster.Count == 1) curAng = it.ang;
+                }
+                else
+                {
+                    clusters.Add(curCluster);
+                    curCluster = new List<double[]> { it.p };
+                    curAng = it.ang;
+                }
+            }
+            if (curCluster.Count > 0) clusters.Add(curCluster);
+
+            // wrap merge first/last clusters
+            if (clusters.Count > 1)
+            {
+                var aF = clusters[0][0];
+                var aL = clusters[clusters.Count - 1][clusters[clusters.Count - 1].Count - 1];
+                double aFv = Math.Atan2(aF[3] - aF[1], aF[2] - aF[0]);
+                double aLv = Math.Atan2(aL[3] - aL[1], aL[2] - aL[0]);
+                double span = (aFv + Math.PI) - aLv;
+                if (span <= ClusterAngleTolRad)
+                {
+                    clusters[clusters.Count - 1].AddRange(clusters[0]);
+                    clusters.RemoveAt(0);
+                }
+            }
+
+            var railsOut = new List<object[]>(); // deg(0), v(1), u0(2), u1(3), thick(4)
+            foreach (var cl in clusters)
+            {
+                double cs0 = 0, sn0 = 0;
+                foreach (var p in cl)
+                {
+                    double a0 = Math.Atan2(p[3] - p[1], p[2] - p[0]);
+                    if (a0 < 0) a0 += Math.PI;
+                    if (a0 >= Math.PI) a0 -= Math.PI;
+                    cs0 += Math.Cos(a0);
+                    sn0 += Math.Sin(a0);
+                }
+                double am = Math.Atan2(sn0, cs0);
+                if (am < 0) am += Math.PI;
+                if (am >= Math.PI) am -= Math.PI;
+                double cu = Math.Cos(am), su = Math.Sin(am);
+
+                var frags = new List<double[]>(); // v0, u0, u1, thick
+                foreach (var p in cl)
+                {
+                    double u0 = p[0] * cu + p[1] * su, v0 = -p[0] * su + p[1] * cu;
+                    double u1 = p[2] * cu + p[3] * su;
+                    if (u1 < u0) { double t = u0; u0 = u1; u1 = t; }
+                    frags.Add(new[] { v0, u0, u1, p[4] });
+                }
+                frags.Sort((a, b) => a[0].CompareTo(b[0]));
+
+                var curRail = new List<double[]>();
+                double railV = 0;
+                foreach (var f in frags)
+                {
+                    if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
+                    else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
+                    else { FlushRail(curRail, railV, railsOut); railV = f[0]; curRail.Add(f); }
+                }
+                FlushRail(curRail, railV, railsOut);
+
+                foreach (var r in railsOut)
+                {
+                    double v = (double)r[0], u0 = (double)r[1], u1 = (double)r[2], thick = (double)r[3];
+                    wallPairs.Add(new WallPair
+                    {
+                        CenterStart = new XYZ(u0 * cu - v * su, u0 * su + v * cu, 0),
+                        CenterEnd = new XYZ(u1 * cu - v * su, u1 * su + v * cu, 0),
+                        Thickness = thick
+                    });
+                }
+                railsOut.Clear();
+            }
+            return wallPairs;
+        }
+
+        private static void FlushRail(List<double[]> curRail, double railV, List<object[]> railsOut)
+        {
+            if (curRail.Count == 0) return;
+            curRail.Sort((a, b) => a[1].CompareTo(b[1]));
+            double u0 = curRail[0][1], u1 = curRail[0][2], thick = curRail[0][3];
+            for (int k = 1; k < curRail.Count; k++)
+            {
+                double f0 = curRail[k][1], f1 = curRail[k][2];
+                if (f0 <= u1 + MergeGapFt)
+                {
+                    if (f1 > u1) u1 = f1;
+                    if (curRail[k][3] > thick) thick = curRail[k][3];
+                }
+                else
+                {
+                    railsOut.Add(new object[] { railV, u0, u1, thick });
+                    u0 = f0; u1 = f1; thick = curRail[k][3];
+                }
+            }
+            railsOut.Add(new object[] { railV, u0, u1, thick });
+            curRail.Clear();
+        }
+
+        private static XYZ ProjectOnLine(XYZ p, XYZ s, XYZ dirUnit)
+        {
+            return s + dirUnit * (p - s).DotProduct(dirUnit);
+        }
+
+        private static List<XYZ> CollectDoorJambPoints(Element target, Document doc)
+        {
+            var pts = new List<XYZ>();
+            var all = DwgCurveSource.CollectLayerCurves(doc, target, null);
+            foreach (var cv in all)
+            {
+                if (!(cv is Arc a)) continue;
+                double spanRad;
+                try { spanRad = a.GetEndParameter(1) - a.GetEndParameter(0); } catch { continue; }
+                double spanDeg = spanRad * 180.0 / Math.PI;
+                if (spanDeg < 75 || spanDeg > 105) continue;
+                if (a.Radius < 0.75 || a.Radius > 5.0) continue;
+                try
+                {
+                    pts.Add(a.GetEndPoint(0));
+                    pts.Add(a.GetEndPoint(1));
+                }
+                catch { }
+            }
+            return pts;
+        }
+
+        private static bool NearJamb(XYZ p, List<XYZ> jambPoints)
+        {
+            foreach (var jp in jambPoints)
+            {
+                if (jp.DistanceTo(p) <= JambSnapFt) return true;
+            }
+            return false;
+        }
+
+        public string GetName()
+        {
+            return "Create Walls from DWG Poche";
+        }
+    }
+}
