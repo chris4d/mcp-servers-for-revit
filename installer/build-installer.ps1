@@ -100,6 +100,49 @@ if (-not $SkipPluginBuild) {
 }
 
 # ---------------------------------------------------------------
+# Step 2b: Seed per-set registry fragments into each staged plugin tree
+# ---------------------------------------------------------------
+# The plugin's MCP dispatch is driven solely by Commands\commandRegistry.json.
+# A fresh install has none, so the plugin would start with an empty registry
+# (commands visible in Settings but not callable). For each staged year we
+# write, next to every command set's command.json, a registry-entries.json
+# fragment (JSON array of that set's command entries). At install time the
+# [Code] section assembles Commands\commandRegistry.json from the fragments
+# of the sets the user kept selected - so pruning a set at install time also
+# prunes its registry entries. All entries are shipped disabled to preserve
+# the opt-in design: the user still enables commands via the plugin's
+# Settings page (check -> Save), but nothing is ever "displayed but
+# unreachable". On reinstall the installer preserves an existing registry
+# (see CopyToRevitAddins) so user opt-ins survive upgrades.
+foreach ($year in $builtVersions) {
+    $commandsDir = Join-Path $StagedDir "$year\revit_mcp_plugin\Commands"
+    if (-not (Test-Path $commandsDir)) { continue }
+
+    foreach ($setDir in (Get-ChildItem $commandsDir -Directory)) {
+        $manifestPath = Join-Path $setDir.FullName "command.json"
+        if (-not (Test-Path $manifestPath)) { continue }
+        try { $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json } catch { continue }
+        if (-not $manifest.commands) { continue }
+
+        $entries = @()
+        foreach ($cmd in $manifest.commands) {
+            $entries += [pscustomobject]@{
+                commandName           = $cmd.commandName
+                description           = $cmd.description
+                assemblyPath          = "$($setDir.Name)\{VERSION}\$($cmd.assemblyPath)"
+                enabled               = $false
+                supportedRevitVersions = @([string]$year)
+                developer             = $manifest.developer
+            }
+        }
+
+        $fragmentPath = Join-Path $setDir.FullName "registry-entries.json"
+        [System.IO.File]::WriteAllText($fragmentPath, (($entries | ConvertTo-Json -Depth 6)), (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "  Seeded registry fragment for ${year}/$($setDir.Name): $($entries.Count) commands (disabled by default)" -ForegroundColor DarkCyan
+    }
+}
+
+# ---------------------------------------------------------------
 # Step 3: Generate .iss
 # ---------------------------------------------------------------
 Write-Host "`n=== Generating .iss ===" -ForegroundColor Cyan
@@ -213,14 +256,61 @@ $issLines += '    end;'
 $issLines += '  end;'
 $issLines += 'end;'
 $issLines += ''
+$issLines += '// Assemble Commands\commandRegistry.json from the registry-entries.json'
+$issLines += '// fragments of the command sets the user kept selected. Skipped when the'
+$issLines += '// user already has a registry (their opt-ins are preserved).'
+$issLines += 'procedure WriteCommandRegistry(Year: String);'
+$issLines += 'var D, P, F, S, Entry: String; I: Integer; First: Boolean; Ch: Char; SL: TStringList;'
+$issLines += 'begin'
+$issLines += '  D := GetAppDataDir + ''\\Autodesk\\Revit\\Addins\\'' + Year + ''\\revit_mcp_plugin\\Commands'';'
+$issLines += '  if not DirExists(D) then Exit;'
+$issLines += '  P := D + ''\\commandRegistry.json'';'
+$issLines += '  if FileExists(P) then Exit;'
+$issLines += '  S := ''{"commands": ['';'
+$issLines += '  First := True;'
+$issLines += '  for I := 0 to High(SetCBs) do'
+$issLines += '  begin'
+$issLines += '    if not SetCBs[I].Checked then Continue;'
+$issLines += '    F := D + ''\\'' + SetCBs[I].Caption + ''\\registry-entries.json'';'
+$issLines += '    if not FileExists(F) then Continue;'
+$issLines += '    SL := TStringList.Create;'
+$issLines += '    try'
+$issLines += '      SL.LoadFromFile(F);'
+$issLines += '      Entry := SL.Text;'
+$issLines += '    finally SL.Free; end;'
+$issLines += '    if (Length(Entry) >= 2) and (Entry[1] = ''['') then Delete(Entry, 1, 1);'
+$issLines += '    while Length(Entry) > 0 do'
+$issLines += '    begin'
+$issLines += '      Ch := Entry[Length(Entry)];'
+$issLines += '      if (Ch = '']'') or (Ch = #13) or (Ch = #10) then'
+$issLines += '        Delete(Entry, Length(Entry), 1)'
+$issLines += '      else'
+$issLines += '        Break;'
+$issLines += '    end;'
+$issLines += '    if Entry = '''' then Continue;'
+$issLines += '    if not First then S := S + '','';'
+$issLines += '    S := S + Entry;'
+$issLines += '    First := False;'
+$issLines += '  end;'
+$issLines += "  S := S + ']}';"
+$issLines += '  SaveStringToFile(P, S, False);'
+$issLines += "  Log('Seeded command registry for ' + Year + ' from surviving set fragments');"
+$issLines += 'end;'
+$issLines += ''
 $issLines += 'procedure CopyToRevitAddins(Year: String);'
-$issLines += 'var Src, Dst: String; BAT: TStringList; RC: Integer;'
+$issLines += 'var Src, Dst: String; BAT: TStringList; RC: Integer; HadReg: Boolean;'
 $issLines += 'begin'
 $issLines += '  Src := ExpandConstant(''{app}\\RevitPlugins\\'' + Year);'
 $issLines += '  Dst := GetAppDataDir + ''\\Autodesk\\Revit\\Addins\\'' + Year;'
 $issLines += '  if not DirExists(Src) then begin Log(''Missing: '' + Src); Exit; end;'
 $issLines += '  PruneCommandSets(Src);'
 $issLines += '  ForceDirectories(Dst);'
+$issLines += '  // Preserve an existing command registry (user opt-ins) across reinstalls:'
+$issLines += '  // back it up before xcopy, restore after. Fresh installs get a registry'
+$issLines += '  // assembled from the surviving sets'' fragments (all commands disabled).'
+$issLines += '  HadReg := FileExists(Dst + ''\\revit_mcp_plugin\\Commands\\commandRegistry.json'');'
+$issLines += '  if HadReg then'
+$issLines += '    if not CopyFile(Dst + ''\\revit_mcp_plugin\\Commands\\commandRegistry.json'', ExpandConstant(''{tmp}\\cmdreg_'' + Year + ''.json''), False) then HadReg := False;'
 $issLines += '  BAT := TStringList.Create;'
 $issLines += '  try'
 $issLines += '    BAT.Add(''@echo off'');'
@@ -228,6 +318,9 @@ $issLines += '    BAT.Add(''xcopy "'' + Src + ''\\*" "'' + Dst + ''\\" /E /I /Y 
 $issLines += '    BAT.SaveToFile(ExpandConstant(''{tmp}\\copy_'' + Year + ''.bat''));'
 $issLines += '  finally BAT.Free; end;'
 $issLines += '  Exec(''cmd'', ''/c "'' + ExpandConstant(''{tmp}\\copy_'' + Year + ''.bat'') + ''"'', '''', SW_HIDE, ewWaitUntilTerminated, RC);'
+$issLines += '  if HadReg then'
+$issLines += '    CopyFile(ExpandConstant(''{tmp}\\cmdreg_'' + Year + ''.json''), Dst + ''\\revit_mcp_plugin\\Commands\\commandRegistry.json'', False);'
+$issLines += '  if not HadReg then WriteCommandRegistry(Year);'
 $issLines += '  Log(''Copied plugin to '' + Dst);'
 $issLines += 'end;'
 $issLines += ''
@@ -513,6 +606,7 @@ $issLines += '      if ClaudeCB.Checked then ConfigureClaudeDesktop;'
 $issLines += '      if CursorCB.Checked then ConfigureCursor;'
 $issLines += '      if OpencodeCB.Checked then ConfigureOpencode;'
 $issLines += '    end;'
+$issLines += '    MsgBox(''Installation complete.'' #13#10 #13#10 ''Commands are disabled by default for your control. To expose model commands to AI clients:'' #13#10 ''1. In Revit, open the plugin Settings page'' #13#10 ''2. Enable the commands you want, then click Save'' #13#10 ''3. Click the Revit MCP Switch to start the server'', mbInformation, MB_OK);'
 $issLines += '  end;'
 $issLines += 'end;'
 $issLines += ''
