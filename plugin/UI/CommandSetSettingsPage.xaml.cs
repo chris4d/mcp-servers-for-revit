@@ -309,40 +309,39 @@ namespace revit_mcp_plugin.UI
 
                     foreach (var command in commandSet.Commands)
                     {
-                        // 只添加启用的命令到注册表
-                        if (command.Enabled)
+                        // 保留禁用命令（enabled=false）以便下次打开时状态不丢失
+                        // Keep disabled commands in the registry (enabled:false) so
+                        // opt-in decisions survive and Save never destroys them.
+                        CommandConfig newConfig;
+                        // 检查命令是否已经存在于之前的注册表中
+                        if (existingCommandsDict.ContainsKey(command.CommandName))
                         {
-                            CommandConfig newConfig;
-                            // 检查命令是否已经存在于之前的注册表中
-                            if (existingCommandsDict.ContainsKey(command.CommandName))
-                            {
-                                // 如果存在，保留原有信息，只更新启用状态和路径模板
-                                newConfig = existingCommandsDict[command.CommandName];
-                                newConfig.Enabled = true;
-                                newConfig.AssemblyPath = command.AssemblyPath;
-                                newConfig.SupportedRevitVersions = command.SupportedRevitVersions;
-                            }
-                            else
-                            {
-                                // 如果是新命令，创建新配置
-                                newConfig = new CommandConfig
-                                {
-                                    CommandName = command.CommandName,
-                                    AssemblyPath = command.AssemblyPath ?? "",
-                                    Enabled = true,
-                                    Description = command.Description,
-                                    SupportedRevitVersions = command.SupportedRevitVersions,
-                                    Developer = commandSetDeveloper
-                                };
-                            }
-                            registry.Commands.Add(newConfig);
+                            // 如果存在，保留原有信息，只更新启用状态和路径模板
+                            newConfig = existingCommandsDict[command.CommandName];
+                            newConfig.Enabled = command.Enabled;
+                            newConfig.AssemblyPath = command.AssemblyPath;
+                            newConfig.SupportedRevitVersions = command.SupportedRevitVersions;
                         }
+                        else
+                        {
+                            // 如果是新命令，创建新配置（禁用命令同样入册）
+                            newConfig = new CommandConfig
+                            {
+                                CommandName = command.CommandName,
+                                AssemblyPath = command.AssemblyPath ?? "",
+                                Enabled = command.Enabled,
+                                Description = command.Description,
+                                SupportedRevitVersions = command.SupportedRevitVersions,
+                                Developer = commandSetDeveloper
+                            };
+                        }
+                        registry.Commands.Add(newConfig);
                     }
                 }
-                // 构建摘要以显示
-                string enabledFeaturesText = "";
-                int enabledCount = registry.Commands.Count;
-                foreach (var command in registry.Commands)
+                // 构建摘要以显示（统计启用数，禁用条目仅入册不提示）
+                int enabledCount = registry.Commands.Count(c => c.Enabled);
+                string enabledFeaturesText = $"Enabled {enabledCount} of {registry.Commands.Count} (disabled entries are kept in the registry):\n";
+                foreach (var command in registry.Commands.Where(c => c.Enabled))
                 {
                     string commandSetName = commandSets
                         .FirstOrDefault(cs => cs.Commands.Any(c => c.CommandName == command.CommandName))?.Name ?? "Unknown";
@@ -354,7 +353,7 @@ namespace revit_mcp_plugin.UI
                 // 序列化并保存到文件
                 string json = JsonConvert.SerializeObject(registry, Formatting.Indented);
                 File.WriteAllText(registryFilePath, json);
-                MessageBox.Show($"Command set settings successfully saved!\n\nEnabled {enabledCount} commands:\n{enabledFeaturesText}",
+                MessageBox.Show($"Command set settings successfully saved!\n\n{enabledFeaturesText}",
                               "Settings Saved", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
