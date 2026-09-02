@@ -212,9 +212,22 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var allRails = new List<Rail>();
                 foreach (var cl in clusters)
                 {
-                    double am = 0;
-                    foreach (int i in cl) am += AngleOf(segs[i]);
-                    am /= cl.Count;
+                    // Circular mean of segment angles (unit-vector average). A
+                    // plain atan average is wrong for a horizontal family that
+                    // straddles the 0/180 wrap: atan2 normalizes dy<0 lines to
+                    // ~180deg and dy>0 lines to ~0deg, and averaging those raw
+                    // values lands anywhere (observed: 5.714deg off a truly
+                    // horizontal family). Vector averaging is wrap-safe.
+                    double cs0 = 0, sn0 = 0;
+                    foreach (int i in cl)
+                    {
+                        double a = AngleOf(segs[i]);
+                        cs0 += Math.Cos(a);
+                        sn0 += Math.Sin(a);
+                    }
+                    double am = Math.Atan2(sn0, cs0);
+                    if (am < 0) am += Math.PI;
+                    if (am >= Math.PI) am -= Math.PI;
                     double cu = Math.Cos(am), su = Math.Sin(am);
 
                     var frags = new List<double[]>(); // v0, u0, u1
