@@ -19,6 +19,10 @@ PrivilegesRequiredOverridesAllowed=dialog
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
+Source: "staged\2020\*"; DestDir: "{app}\RevitPlugins\2020"; Flags: recursesubdirs ignoreversion
+Source: "staged\2021\*"; DestDir: "{app}\RevitPlugins\2021"; Flags: recursesubdirs ignoreversion
+Source: "staged\2022\*"; DestDir: "{app}\RevitPlugins\2022"; Flags: recursesubdirs ignoreversion
+Source: "staged\2023\*"; DestDir: "{app}\RevitPlugins\2023"; Flags: recursesubdirs ignoreversion
 Source: "staged\2024\*"; DestDir: "{app}\RevitPlugins\2024"; Flags: recursesubdirs ignoreversion
 
 [Icons]
@@ -35,7 +39,7 @@ var
   SetPage: TWizardPage;
   ClaudeCB, CursorCB, OpencodeCB: TNewCheckBox;
 
-var SetCBs: array[0..1] of TNewCheckBox;
+var SetCBs: array[0..2] of TNewCheckBox;
 
 function GetAppDataDir: String;
 begin
@@ -71,14 +75,61 @@ begin
   end;
 end;
 
+// Assemble Commands\commandRegistry.json from the registry-entries.json
+// fragments of the command sets the user kept selected. Skipped when the
+// user already has a registry (their opt-ins are preserved).
+procedure WriteCommandRegistry(Year: String);
+var D, P, F, S, Entry: String; I: Integer; First: Boolean; Ch: Char; SL: TStringList;
+begin
+  D := GetAppDataDir + '\\Autodesk\\Revit\\Addins\\' + Year + '\\revit_mcp_plugin\\Commands';
+  if not DirExists(D) then Exit;
+  P := D + '\\commandRegistry.json';
+  if FileExists(P) then Exit;
+  S := '{"commands": [';
+  First := True;
+  for I := 0 to High(SetCBs) do
+  begin
+    if not SetCBs[I].Checked then Continue;
+    F := D + '\\' + SetCBs[I].Caption + '\\registry-entries.json';
+    if not FileExists(F) then Continue;
+    SL := TStringList.Create;
+    try
+      SL.LoadFromFile(F);
+      Entry := SL.Text;
+    finally SL.Free; end;
+    if (Length(Entry) >= 2) and (Entry[1] = '[') then Delete(Entry, 1, 1);
+    while Length(Entry) > 0 do
+    begin
+      Ch := Entry[Length(Entry)];
+      if (Ch = ']') or (Ch = #13) or (Ch = #10) then
+        Delete(Entry, Length(Entry), 1)
+      else
+        Break;
+    end;
+    if Entry = '' then Continue;
+    if not First then S := S + ',';
+    S := S + Entry;
+    First := False;
+  end;
+  S := S + ']}';
+  SaveStringToFile(P, S, False);
+  Log('Seeded command registry for ' + Year + ' from surviving set fragments');
+end;
+
 procedure CopyToRevitAddins(Year: String);
-var Src, Dst: String; BAT: TStringList; RC: Integer;
+var Src, Dst: String; BAT: TStringList; RC: Integer; HadReg: Boolean;
 begin
   Src := ExpandConstant('{app}\\RevitPlugins\\' + Year);
   Dst := GetAppDataDir + '\\Autodesk\\Revit\\Addins\\' + Year;
   if not DirExists(Src) then begin Log('Missing: ' + Src); Exit; end;
   PruneCommandSets(Src);
   ForceDirectories(Dst);
+  // Preserve an existing command registry (user opt-ins) across reinstalls:
+  // back it up before xcopy, restore after. Fresh installs get a registry
+  // assembled from the surviving sets' fragments (all commands disabled).
+  HadReg := FileExists(Dst + '\\revit_mcp_plugin\\Commands\\commandRegistry.json');
+  if HadReg then
+    if not CopyFile(Dst + '\\revit_mcp_plugin\\Commands\\commandRegistry.json', ExpandConstant('{tmp}\\cmdreg_' + Year + '.json'), False) then HadReg := False;
   BAT := TStringList.Create;
   try
     BAT.Add('@echo off');
@@ -86,6 +137,9 @@ begin
     BAT.SaveToFile(ExpandConstant('{tmp}\\copy_' + Year + '.bat'));
   finally BAT.Free; end;
   Exec('cmd', '/c "' + ExpandConstant('{tmp}\\copy_' + Year + '.bat') + '"', '', SW_HIDE, ewWaitUntilTerminated, RC);
+  if HadReg then
+    CopyFile(ExpandConstant('{tmp}\\cmdreg_' + Year + '.json'), Dst + '\\revit_mcp_plugin\\Commands\\commandRegistry.json', False);
+  if not HadReg then WriteCommandRegistry(Year);
   Log('Copied plugin to ' + Dst);
 end;
 
@@ -276,6 +330,7 @@ end;
 procedure CreateCommandSetPage;
 var I: Integer;
   SetLabel: TNewStaticText;
+  Names: array[0..2] of String;
 begin
   SetPage := CreateCustomPage(wpSelectDir, 'Command Sets', 'Select which Command Sets to install:');
 
@@ -285,14 +340,16 @@ begin
   SetLabel.Caption := 'All command sets are selected by default. Uncheck any you do not want:';
   SetLabel.Font.Style := [fsBold];
 
+  Names[0] := 'RevitMCPCommandSet';
+  Names[1] := 'DwgCommandSet';
+  Names[2] := 'OffAxisCommandSet';
+
   for I := 0 to High(SetCBs) do begin
     SetCBs[I] := TNewCheckBox.Create(WizardForm);
     SetCBs[I].Parent := SetPage.Surface;
     SetCBs[I].SetBounds(ScaleX(20), ScaleY(40 + I * 30), ScaleX(600), ScaleY(20));
-    SetCBs[0].Caption := 'OffAxisCommandSet';
-    SetCBs[0].Checked := True;
-    SetCBs[1].Caption := 'RevitMCPCommandSet';
-    SetCBs[1].Checked := True;
+    SetCBs[I].Caption := Names[I];
+    SetCBs[I].Checked := True;
   end;
 end;
 
@@ -358,6 +415,10 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var AnyChecked: Boolean;
 begin
   if CurStep = ssPostInstall then begin
+    if IsRevitInstalled('2020') then CopyToRevitAddins('2020');
+    if IsRevitInstalled('2021') then CopyToRevitAddins('2021');
+    if IsRevitInstalled('2022') then CopyToRevitAddins('2022');
+    if IsRevitInstalled('2023') then CopyToRevitAddins('2023');
     if IsRevitInstalled('2024') then CopyToRevitAddins('2024');
     AnyChecked := ClaudeCB.Checked or CursorCB.Checked or OpencodeCB.Checked;
     if not AnyChecked then ConfigureDetectedClients
@@ -366,6 +427,7 @@ begin
       if CursorCB.Checked then ConfigureCursor;
       if OpencodeCB.Checked then ConfigureOpencode;
     end;
+    MsgBox('Installation complete.' #13#10 #13#10 'Commands are disabled by default for your control. To expose model commands to AI clients:' #13#10 '1. In Revit, open the plugin Settings page' #13#10 '2. Enable the commands you want, then click Save' #13#10 '3. Click the Revit MCP Switch to start the server', mbInformation, MB_OK);
   end;
 end;
 
