@@ -25,7 +25,7 @@
     },
     {
       "commandName": "create_walls_from_dwg_layer",
-      "description": "Generate Revit walls from paired face lines on one DWG layer: parallel pairs within a thickness range map to the nearest wall type by thickness; short jamb pairs and door-swing spans are rejected.",
+      "description": "Generate Revit walls from paired face lines on one or more DWG layers (comma-separated): collinear fragments merge into rails, duplicate pen lines are removed, parallel rail pairs within a thickness range map to the nearest wall type by thickness; short jamb pairs and door-swing spans are rejected.",
       "assemblyPath": "DwgCommandSet.dll"
     }
   ]

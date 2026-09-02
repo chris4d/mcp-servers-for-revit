@@ -5,14 +5,14 @@ import { withRevitConnection } from "../utils/ConnectionManager.js";
 export function registerCreateWallsFromDwgLayerTool(server: McpServer) {
   server.tool(
     "create_walls_from_dwg_layer",
-    "Generate Revit walls from paired face lines on one DWG layer. Pairs near-parallel lines (within 2 degrees) whose perpendicular distance is 2in-36in (wall thickness) with sufficient directional overlap, then maps each pair's thickness to the nearest Revit wall type by compound width. Short pairs are rejected as door-jamb linework; pairs spanning detected door-swing arcs (quarter arcs on any DWG layer) are rejected. Arc curves are counted but not built. Run fix_off_axis_* and fix_spacing_elements afterward to correct drafting slop.",
+    "Generate Revit walls from paired face lines on one or more DWG layers (comma-separated, e.g. 'PEN1,Pen 1'). Faces split across pen layers and fragmented collinear pieces are merged first, then duplicate segments (pens redrawing the same line) are removed. Pairs near-parallel rails whose perpendicular distance is 2in-36in (wall thickness) with sufficient directional overlap, then maps each pair's thickness to the nearest Revit wall type by compound width. Short pairs are rejected as door-jamb linework; pairs spanning detected door-swing arcs (quarter arcs on any DWG layer) are rejected. Arc curves are counted but not built. Run fix_off_axis_* and fix_spacing_elements afterward to correct drafting slop.",
     {
       dwgNameOrId: z
         .string()
         .describe("Element ID or name (exact or partial) of the imported/linked DWG."),
       layer: z
         .string()
-        .describe("Exact DWG layer containing the wall face lines (e.g. 'A-WALL'). Use extract_dwg_curves to list layers."),
+        .describe("DWG layer(s) containing the wall face lines, comma-separated for pen-split faces (e.g. 'PEN1,Pen 1'). Use extract_dwg_curves to list layers."),
       heightFt: z
         .number()
         .positive()

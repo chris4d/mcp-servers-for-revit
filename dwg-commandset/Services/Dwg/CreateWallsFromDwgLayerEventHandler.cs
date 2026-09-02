@@ -12,12 +12,18 @@ namespace RevitMCPCommandSet.Services.Dwg
 {
     /// <summary>
     /// Mutating handler that generates Revit walls from paired face lines on
-    /// one DWG layer. DWGs draft walls as pairs of parallel lines (the two
-    /// faces). Detection: near-parallel pairs within a thickness range with
-    /// sufficient directional overlap; greedy assignment consumes each face
-    /// line once. Short pairs are rejected as door jamb linework, and pairs
-    /// spanning detected door-swing arcs are optionally rejected. Pair
-    /// thickness maps to the nearest Revit wall type by compound width.
+    /// one or more DWG layers (comma-separated). CAD drafters split wall faces
+    /// across pen layers and draw them as fragmented collinear pieces, so the
+    /// detection pipeline is:
+    ///   1. straighten to 2D plan segments (near-horizontal lines only)
+    ///   2. deduplicate identical segments (c>ad pens redraw the same line)
+    ///   3. cluster by angle (mod 180, 2 deg tolerance, wrap-aware)
+    ///   4. merge collinear fragments into continuous rails inside a cluster
+    ///   5. pair rails: parallel, thickness in range, directional overlap
+    /// Centerline spans the overlap as the mean of both rails. Short pairs
+    /// are rejected as door jamb linework, and pairs spanning detected
+    /// door-swing arcs are optionally rejected. Thickness maps to the nearest
+    /// Revit wall type by compound width.
     /// </summary>
     public class CreateWallsFromDwgLayerEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
@@ -33,10 +39,17 @@ namespace RevitMCPCommandSet.Services.Dwg
         public long LevelId { get; set; } = -1;
         public int MaxWalls { get; set; } = 200;
 
+        // Tunables (kept internal; revisit per-DWG if needed).
         private const double MinWallThicknessFt = 2.0 / 12.0; // 2"
-        private const double MaxParallelDevDeg = 2.0;
+        private const double MaxParallelDevDeg = 2.0;   // angle clustering
+        private const double PairAngleTolDeg = 1.0;     // rail pairing
         private const double MinOverlapFrac = 0.7;
-        private const double JambSnapFt = 0.35;
+        private const double JambStubMaxFt = 2.0;       // partner rails shorter than this are jamb linework
+        private const double RailTolFt = 0.05;          // collinear offset tolerance
+        private const double MergeGapFt = 0.5;          // collinear fragment gap tolerance
+        private const double PlanarZTolFrac = 0.05;     // dz/len limit for plan-view lines
+        private const double MinSegFt = 0.05;           // drop sub-inch debris
+        private const double DedupTolFt = 0.01;         // 2mm dedup rounding
 
         public object Result { get; private set; }
 
@@ -53,7 +66,17 @@ namespace RevitMCPCommandSet.Services.Dwg
             public double Thickness;
 
             public double Length => CenterStart.DistanceTo(CenterEnd);
-            public XYZ Mid => (CenterStart + CenterEnd) * 0.5;
+        }
+
+        // A merged collinear continuous face in cluster frame + world centerline.
+        private class Rail
+        {
+            public double AngleDeg; // cluster mean angle, degrees
+            public double V;        // perpendicular offset in cluster frame
+            public double U0, U1;   // extent along cluster direction
+            public XYZ WorldStart;
+            public XYZ WorldEnd;
+            public double Length => U1 - U0;
         }
 
         public void Execute(UIApplication app)
@@ -80,62 +103,220 @@ namespace RevitMCPCommandSet.Services.Dwg
                     return;
                 }
 
-                var layerCurves = DwgCurveSource.CollectLayerCurves(doc, target, Layer.Trim());
+                var layers = Layer.Split(',')
+                    .Select(s => s.Trim())
+                    .Where(s => s.Length > 0)
+                    .ToList();
 
-                // Straight lines only; arcs are stubbed (counted, not built).
-                var lines = new List<Line>();
-                int arcsStubbed = 0, otherSkipped = 0;
-                foreach (var cv in layerCurves)
+                // ---- 1. Collect: 2D plan segments over all requested layers ----
+                var layerCurves = new List<Curve>();
+                var layerNames = new List<string>();
+                foreach (var name in layers)
                 {
-                    if (cv is Line ln) lines.Add(ln);
-                    else if (cv is Arc) arcsStubbed++;
-                    else otherSkipped++;
+                    var cs = DwgCurveSource.CollectLayerCurves(doc, target, name);
+                    if (cs.Count > 0) layerNames.Add(name);
+                    layerCurves.AddRange(cs);
                 }
 
-                if (lines.Count == 0)
+                if (layerCurves.Count == 0)
                 {
                     Result = new Dictionary<string, object>
                     {
-                        ["error"] = $"No straight lines found on layer '{Layer}' of '{targetName}'",
-                        ["arcsStubbed"] = arcsStubbed,
-                        ["otherSkipped"] = otherSkipped
+                        ["error"] = $"No curves found on layer(s) '{Layer}' of '{targetName}'"
                     };
                     return;
                 }
 
-                // Door-swing arc detection across ALL layers of the DWG.
-                List<XYZ> jambPoints = null;
-                if (ExcludeDoorArcs)
+                int nonLine = 0, nonPlanar = 0, tiny = 0;
+                var segs = new List<double[]>(); // x0,y0,x1,y1,len
+                foreach (var cv in layerCurves)
                 {
-                    jambPoints = CollectDoorJambPoints(target, doc);
+                    var ln = cv as Line;
+                    if (ln == null) { nonLine++; continue; }
+                    var p0 = ln.GetEndPoint(0);
+                    var p1 = ln.GetEndPoint(1);
+                    double dx = p1.X - p0.X, dy = p1.Y - p0.Y, dz = p1.Z - p0.Z;
+                    double len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    if (len < 1e-9) continue;
+                    if (Math.Abs(dz) > PlanarZTolFrac * len) { nonPlanar++; continue; }
+                    if (Math.Sqrt(dx * dx + dy * dy) < MinSegFt) { tiny++; continue; }
+                    segs.Add(new[] { p0.X, p0.Y, p1.X, p1.Y, Math.Sqrt(dx * dx + dy * dy) });
                 }
 
-                // ---- Pair detection ----
-                var candidates = new List<(int i, int j, double thick, double overlapFrac)>();
-                for (int i = 0; i < lines.Count; i++)
+                if (segs.Count == 0)
                 {
-                    for (int j = i + 1; j < lines.Count; j++)
+                    Result = new Dictionary<string, object>
                     {
-                        if (TryPair(lines[i], lines[j], out var pair, out double overlapFrac))
-                            candidates.Add((i, j, pair.Thickness, overlapFrac));
+                        ["error"] = "No usable plan-view lines on the requested layer(s)",
+                        ["nonLine"] = nonLine, ["nonPlanar"] = nonPlanar, ["tiny"] = tiny
+                    };
+                    return;
+                }
+
+                // ---- 2. Dedup identical segments across pens ----
+                var seenKeys = new HashSet<string>();
+                var segs2 = new List<double[]>();
+                foreach (var s in segs)
+                {
+                    double xa = Math.Round(Math.Min(s[0], s[2]) / DedupTolFt) * DedupTolFt;
+                    double ya = Math.Round(Math.Min(s[1], s[3]) / DedupTolFt) * DedupTolFt;
+                    double xb = Math.Round(Math.Max(s[0], s[2]) / DedupTolFt) * DedupTolFt;
+                    double yb = Math.Round(Math.Max(s[1], s[3]) / DedupTolFt) * DedupTolFt;
+                    string key = xa.ToString("R") + "," + ya.ToString("R") + "|" + xb.ToString("R") + "," + yb.ToString("R");
+                    if (seenKeys.Add(key)) segs2.Add(s);
+                }
+                int duplicatesRemoved = segs.Count - segs2.Count;
+                segs = segs2;
+
+                // ---- 3. Angle clustering (mod 180, wrap-aware) ----
+                double angTol = MaxParallelDevDeg * Math.PI / 180.0;
+                var items = new List<double[]>(); // ang, segIdx
+                for (int i = 0; i < segs.Count; i++)
+                {
+                    double ang = Math.Atan2(segs[i][3] - segs[i][1], segs[i][2] - segs[i][0]);
+                    if (ang < 0) ang += Math.PI;
+                    if (ang >= Math.PI) ang -= Math.PI;
+                    items.Add(new[] { ang, (double)i });
+                }
+                items.Sort((a, b) => a[0].CompareTo(b[0]));
+
+                var clusters = new List<List<int>>();
+                var curCluster = new List<int>();
+                double curAng = -1;
+                foreach (var it in items)
+                {
+                    double a = it[0];
+                    if (curCluster.Count == 0 || a - curAng <= angTol)
+                    {
+                        curCluster.Add((int)it[1]);
+                        if (curCluster.Count == 1) curAng = a;
+                    }
+                    else
+                    {
+                        clusters.Add(curCluster);
+                        curCluster = new List<int> { (int)it[1] };
+                        curAng = a;
+                    }
+                }
+                if (curCluster.Count > 0) clusters.Add(curCluster);
+                if (clusters.Count > 1)
+                {
+                    var first = clusters[0];
+                    var last = clusters[clusters.Count - 1];
+                    double aF = AngleOf(segs[first[0]]);
+                    double aL = AngleOf(segs[last[0]]);
+                    if ((aF + Math.PI) - aL <= angTol) { last.AddRange(first); clusters.RemoveAt(0); }
+                }
+
+                // ---- 4. Merge collinear fragments into rails per cluster ----
+                var allRails = new List<Rail>();
+                foreach (var cl in clusters)
+                {
+                    double am = 0;
+                    foreach (int i in cl) am += AngleOf(segs[i]);
+                    am /= cl.Count;
+                    double cu = Math.Cos(am), su = Math.Sin(am);
+
+                    var frags = new List<double[]>(); // v0, u0, u1
+                    foreach (int i in cl)
+                    {
+                        double u0 = segs[i][0] * cu + segs[i][1] * su;
+                        double v0 = -segs[i][0] * su + segs[i][1] * cu;
+                        double u1 = segs[i][2] * cu + segs[i][3] * su;
+                        if (u1 < u0) { double t = u0; u0 = u1; u1 = t; }
+                        frags.Add(new[] { v0, u0, u1 });
+                    }
+                    frags.Sort((a, b) => a[0].CompareTo(b[0]));
+
+                    var rails = new List<double[]>(); // v, u0, u1
+                    var curRail = new List<double[]>();
+                    double railV = 0;
+                    foreach (var f in frags)
+                    {
+                        if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
+                        else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
+                        else { FlushRail(curRail, railV, rails); railV = f[0]; curRail.Add(f); }
+                    }
+                    FlushRail(curRail, railV, rails);
+
+                    foreach (var r in rails)
+                    {
+                        double v = r[0], u0 = r[1], u1 = r[2];
+                        allRails.Add(new Rail
+                        {
+                            AngleDeg = am * 180.0 / Math.PI,
+                            V = v, U0 = u0, U1 = u1,
+                            WorldStart = new XYZ(u0 * cu - v * su, u0 * su + v * cu, 0),
+                            WorldEnd = new XYZ(u1 * cu - v * su, u1 * su + v * cu, 0)
+                        });
+                    }
+                }
+                // ---- 5. Pair rails ----
+                var longIdx = new List<int>();
+                for (int i = 0; i < allRails.Count; i++)
+                    if (allRails[i].Length >= JambStubMaxFt) longIdx.Add(i);
+
+                var candidates = new List<Cand>();
+                foreach (int i in longIdx)
+                {
+                    if (allRails[i].Length < MinWallLengthFt) continue;
+                    foreach (int j in longIdx)
+                    {
+                        if (j == i) continue;
+                        double dAng = Math.Abs(allRails[i].AngleDeg - allRails[j].AngleDeg);
+                        if (Math.Min(dAng, 180 - dAng) > PairAngleTolDeg) continue;
+
+                        // Express rail j in rail i's cluster frame (angle-tolerant,
+                        // orientation-corrected) so thickness/overlap are true values.
+                        double ar = allRails[i].AngleDeg * Math.PI / 180.0;
+                        double cu = Math.Cos(ar), su = Math.Sin(ar);
+                        double uj0 = allRails[j].WorldStart.X * cu + allRails[j].WorldStart.Y * su;
+                        double vj0 = -allRails[j].WorldStart.X * su + allRails[j].WorldStart.Y * cu;
+                        double uj1 = allRails[j].WorldEnd.X * cu + allRails[j].WorldEnd.Y * su;
+                        double vj1 = -allRails[j].WorldEnd.X * su + allRails[j].WorldEnd.Y * cu;
+                        if (uj1 < uj0) { double t = uj0; uj0 = uj1; uj1 = t; }
+                        double vj = (vj0 + vj1) * 0.5;
+
+                        double dv = Math.Abs(allRails[i].V - vj);
+                        if (dv < MinWallThicknessFt || dv > MaxWallThicknessFt) continue;
+
+                        double lo = Math.Max(allRails[i].U0, uj0);
+                        double hi = Math.Min(allRails[i].U1, uj1);
+                        double ov = hi - lo;
+                        if (ov <= 0) continue;
+                        double minRail = Math.Min(allRails[i].Length, allRails[j].Length);
+                        double frac = ov / minRail;
+                        if (frac < MinOverlapFrac) continue;
+                        if (allRails[j].Length < JambStubMaxFt) continue;
+
+                        candidates.Add(new Cand { I = i, J = j, Thick = dv, OverlapFrac = frac, Vj = vj, Uj0 = uj0, Uj1 = uj1 });
                     }
                 }
 
                 // Greedy: most overlap first, then thinnest.
-                var consumedSet = new HashSet<int>();
+                var consumed = new HashSet<int>();
                 var accepted = new List<WallPair>();
                 foreach (var cand in candidates
-                    .OrderByDescending(c => c.overlapFrac)
-                    .ThenBy(c => c.thick))
+                    .OrderByDescending(c => c.OverlapFrac)
+                    .ThenBy(c => c.Thick))
                 {
-                    if (consumedSet.Contains(cand.i) || consumedSet.Contains(cand.j)) continue;
-                    consumedSet.Add(cand.i);
-                    consumedSet.Add(cand.j);
-                    TryPair(lines[cand.i], lines[cand.j], out var pair, out _);
-                    if (pair != null) accepted.Add(pair);
+                    if (consumed.Contains(cand.I) || consumed.Contains(cand.J)) continue;
+                    var ra = allRails[cand.I];
+                    var rb = allRails[cand.J];
+                    double lo = Math.Max(ra.U0, cand.Uj0);
+                    double hi = Math.Min(ra.U1, cand.Uj1);
+                    double vm = (ra.V + cand.Vj) * 0.5;
+                    double cu = Math.Cos(ra.AngleDeg * Math.PI / 180.0), su = Math.Sin(ra.AngleDeg * Math.PI / 180.0);
+                    accepted.Add(new WallPair
+                    {
+                        CenterStart = new XYZ(lo * cu - vm * su, lo * su + vm * cu, 0),
+                        CenterEnd = new XYZ(hi * cu - vm * su, hi * su + vm * cu, 0),
+                        Thickness = cand.Thick
+                    });
+                    consumed.Add(cand.I);
+                    consumed.Add(cand.J);
                 }
-
-                int unpairedCount = lines.Count - accepted.Count * 2;
+                int unpairedRails = longIdx.Count(id => !consumed.Contains(id) && allRails[id].Length >= MinWallLengthFt);
 
                 // ---- Level ----
                 double z = DwgCurveSource.MedianZ(layerCurves);
@@ -173,6 +354,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                 }
 
                 // ---- Build ----
+                List<XYZ> jambPoints = null;
+                if (ExcludeDoorArcs)
+                {
+                    jambPoints = CollectDoorJambPoints(target, doc);
+                }
+
                 var preprocessor = new SilentWarningsPreprocessor();
                 var createdIds = new List<long>();
                 var typeSummary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -240,17 +427,22 @@ namespace RevitMCPCommandSet.Services.Dwg
                         ["name"] = targetName,
                         ["kind"] = targetKind
                     },
-                    ["layer"] = Layer.Trim(),
+                    ["layers"] = layerNames,
                     ["level"] = new Dictionary<string, object> { ["id"] = DwgCurveSource.IdValue(level), ["name"] = level.Name },
                     ["heightFt"] = HeightFt,
-                    ["totalLines"] = lines.Count,
+                    ["totalCurves"] = layerCurves.Count,
+                    ["planLines"] = segs.Count,
+                    ["duplicatesRemoved"] = duplicatesRemoved,
+                    ["nonLine"] = nonLine,
+                    ["nonPlanar"] = nonPlanar,
+                    ["tiny"] = tiny,
+                    ["rails"] = allRails.Count,
+                    ["candidates"] = accepted.Count,
                     ["wallsCreated"] = created,
-                    ["unpairedLines"] = unpairedCount,
+                    ["unpairedLongRails"] = unpairedRails,
                     ["rejectedJamb"] = rejectedJamb,
                     ["doorArcRejected"] = doorArcRejected,
                     ["buildFailed"] = buildFailed,
-                    ["arcsStubbed"] = arcsStubbed,
-                    ["otherSkipped"] = otherSkipped,
                     ["maxWallThicknessFt"] = MaxWallThicknessFt,
                     ["minWallLengthFt"] = MinWallLengthFt,
                     ["typeSummary"] = typeSummary,
@@ -268,66 +460,34 @@ namespace RevitMCPCommandSet.Services.Dwg
             }
         }
 
-        /// <summary>
-        /// Try to pair two lines as wall faces: near-parallel, perpendicular
-        /// distance within thickness range, sufficient directional overlap.
-        /// Centerline spans the overlap region as the mean of both lines.
-        /// </summary>
-        private bool TryPair(Line a, Line b, out WallPair pair, out double overlapFrac)
+        private static double AngleOf(double[] s)
         {
-            pair = null;
-            overlapFrac = 0;
-
-            var sa = a.GetEndPoint(0);
-            var ea = a.GetEndPoint(1);
-            XYZ da = ea - sa;
-            double la = da.GetLength();
-            if (la < 1e-9) return false;
-            XYZ ua = da / la;
-
-            var sb = b.GetEndPoint(0);
-            var eb = b.GetEndPoint(1);
-            XYZ db = eb - sb;
-            double lb = db.GetLength();
-            if (lb < 1e-9) return false;
-            XYZ ub = db / lb;
-
-            // Parallelism: undirected angle deviation.
-            double dot = Math.Abs(ua.DotProduct(ub));
-            double angDeg = Math.Acos(Math.Min(1.0, dot)) * 180.0 / Math.PI;
-            if (angDeg > MaxParallelDevDeg) return false;
-
-            // Perpendicular thickness from b's midpoint to a's infinite line.
-            var mb = (sb + eb) * 0.5;
-            XYZ v = mb - sa;
-            XYZ perp = v - ua * v.DotProduct(ua);
-            double thick = perp.GetLength();
-            if (thick < MinWallThicknessFt || thick > MaxWallThicknessFt) return false;
-
-            // Overlap along a's parameter.
-            double tb0 = (sb - sa).DotProduct(ua) / la;   // param of b.start on a
-            double tb1 = (eb - sa).DotProduct(ua) / la;   // param of b.end on a
-            double lo = Math.Max(0.0, Math.Min(tb0, tb1));
-            double hi = Math.Min(1.0, Math.Max(tb0, tb1));
-            if (hi <= lo) return false;
-
-            double overlapLen = (hi - lo) * la;
-            overlapFrac = overlapLen / Math.Min(la, lb);
-            if (overlapFrac < MinOverlapFrac) return false;
-
-            // Centerline: mean of point on a and its projection on b, over overlap.
-            var pStart = sa + da * lo;
-            XYZ c0 = (pStart + ProjectOnLine(pStart, sb, ub)) * 0.5;
-            var pEnd = sa + da * hi;
-            XYZ c1 = (pEnd + ProjectOnLine(pEnd, sb, ub)) * 0.5;
-
-            pair = new WallPair { CenterStart = c0, CenterEnd = c1, Thickness = thick };
-            return true;
+            double a = Math.Atan2(s[3] - s[1], s[2] - s[0]);
+            if (a < 0) a += Math.PI;
+            if (a >= Math.PI) a -= Math.PI;
+            return a;
         }
 
-        private static XYZ ProjectOnLine(XYZ p, XYZ s, XYZ dirUnit)
+        private static void FlushRail(List<double[]> curRail, double railV, List<double[]> rails)
         {
-            return s + dirUnit * (p - s).DotProduct(dirUnit);
+            if (curRail.Count == 0) return;
+            curRail.Sort((a, b) => a[1].CompareTo(b[1]));
+            double u0 = curRail[0][1], u1 = curRail[0][2];
+            for (int k = 1; k < curRail.Count; k++)
+            {
+                double f0 = curRail[k][1], f1 = curRail[k][2];
+                if (f0 <= u1 + MergeGapFt)
+                {
+                    if (f1 > u1) u1 = f1;
+                }
+                else
+                {
+                    rails.Add(new[] { railV, u0, u1 });
+                    u0 = f0; u1 = f1;
+                }
+            }
+            rails.Add(new[] { railV, u0, u1 });
+            curRail.Clear();
         }
 
         private static List<XYZ> CollectDoorJambPoints(Element target, Document doc)
@@ -359,6 +519,18 @@ namespace RevitMCPCommandSet.Services.Dwg
                 if (jp.DistanceTo(p) <= JambSnapFt) return true;
             }
             return false;
+        }
+
+        private const double JambSnapFt = 0.35;
+
+        // Pairing candidate between two rails.
+        private class Cand
+        {
+            public int I, J;
+            public double Thick;
+            public double OverlapFrac;
+            public double Vj;    // j's perpendicular offset in i's frame
+            public double Uj0, Uj1; // j's extent along i's frame
         }
 
         public string GetName()
