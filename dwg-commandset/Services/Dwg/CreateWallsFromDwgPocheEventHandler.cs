@@ -51,10 +51,25 @@ namespace RevitMCPCommandSet.Services.Dwg
         private const double PairAngleTolDeg = 2.0;            // face pairing parallelism
         private const double MinOverlapFrac = 0.7;
         private const double ClusterAngleTolRad = 2.0 * Math.PI / 180.0; // piece clustering
-        private const double MergeGapFt = 0.5;                 // independent collinear merge gap
+        private const double MergeGapFt = 0.5;                 // silent merge gap (drafting slop)
         private const double LoopCloseTolFt = 0.01;
         private const double MinRunFt = 0.3;                   // debris threshold for a face run
         private const double JambSnapFt = 0.35;
+
+        // Opening bridging: walls are placed continuous across door openings
+        // (doors get inserted later and cut real openings). A collinear gap on
+        // the same rail up to MaxOpeningGapFt (doors incl. jamb trim; large
+        // double doors) is bridged when both flanking pieces agree on measured
+        // thickness AND a short perpendicular jamb run (the opening face)
+        // brackets the gap. Gaps without jamb evidence stay separate.
+        private const double MaxOpeningGapFt = 8.0;   // max bridged door opening
+        private const double BridgeThicknessTolFt = 0.05; // same-wall thickness agreement
+        private const double JambRatio = 0.35;        // short run vs neighbor lengths
+        private const double JambPerpMinDeg = 60.0;   // jamb-vs-neighbor perpendicularity floor
+        private const double JambSiblingParallelTolDeg = 10.0; // sibling runs face each other
+        private const double JambSiblingLenTol = 0.25;  // near-equal lengths (both span the band)
+        private const double BridgeJambSnapFt = 0.6;  // jamb midpoint may sit near a gap edge
+        private const double PocheProximityFt = 0.15; // midline may sit this far outside a hatch patch (multi-wythe seam)
 
         public object Result { get; private set; }
 
@@ -203,7 +218,29 @@ namespace RevitMCPCommandSet.Services.Dwg
                 double minT = MinWallThicknessFt;
                 double maxT = MaxWallThicknessFt;
                 var centerlinePieces = new List<double[]>(); // sX,sY,eX,eY,thick
-                int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;
+                var jambMidpoints = new List<XYZ>();         // opening-face run midpoints (bridging evidence)
+                int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;                int jambCandidates = 0;
+                int pairsOutsidePoche = 0, pairsInsidePoche = 0;
+                // Hatch-fill polygons for the poche containment gate: a
+                // candidate midline must lie inside SOME hatch face. Real
+                // walls are poché, so their centerline runs through hatch;
+                // lines on opposite sides of a room put the centerline in
+                // un-hatched space - a strong non-pair signal.
+                var pochePolys = loops;
+                var rejects = new List<Dictionary<string, object>>();
+                const int RejectLogCap = 600;
+                const int PerStageCap = 150;
+                int rejectLogIndex = 0;
+                var stageCounts = new Dictionary<string, int>();
+                void LogReject(string stage, Dictionary<string, object> fields)
+                {
+                    if (!stageCounts.ContainsKey(stage)) stageCounts[stage] = 0;
+                    stageCounts[stage]++;
+                    if (stageCounts[stage] > PerStageCap || rejectLogIndex >= RejectLogCap) return;
+                    fields["stage"] = stage;
+                    rejects.Add(fields);
+                    rejectLogIndex++;
+                }
 
                 foreach (var vs in loops)
                 {
@@ -213,7 +250,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     // Merge consecutive collinear edges into straight runs.
                     // NOTE: rings come deduped WITHOUT the repeated closing
                     // vertex — the ring edge wraps via (k+1)%n.
-                    var runs = new List<(XYZ s, XYZ e)>();
+                    var runs = new List<(XYZ s, XYZ e, double len)>();
                     int i = 0;
                     while (i < n)
                     {
@@ -246,14 +283,69 @@ namespace RevitMCPCommandSet.Services.Dwg
                         }
                         if (lenCur >= MinRunFt)
                         {
-                            runs.Add((vs[i], vs[(k + 1) % n]));
+                            runs.Add((vs[i], vs[(k + 1) % n], lenCur));
                             straightRuns++;
                         }
                         i = k + 1;
                     }
 
+                    // Jamb classification: a short run bracketed by two long
+                    // neighbors is the face of a door opening (jamb linework),
+                    // when both neighbor get perpendicular rather than
+                    // collinear to it. Its midpoint becomes bridging evidence.
+                    int runCount = runs.Count;
+                    if (runCount >= 3)
+                    {
+                        for (int j = 0; j < runCount; j++)
+                        {
+                            var prevR = runs[(j + runCount - 1) % runCount];
+                            var nextR = runs[(j + 1) % runCount];
+                            // JambRatio gate (short-vs-neighbors) is disabled:
+                            // the sibling test below is the real jamb proof,
+                            // and the ratio heuristic was rejecting real
+                            // opening faces adjacent to junctions.
+                            //if (runs[j].len >= JambRatio * Math.Min(prevR.len, nextR.len)) continue;
+                            XYZ dj = runs[j].e - runs[j].s;
+                            XYZ dp = prevR.e - prevR.s;
+                            XYZ dn = nextR.e - nextR.s;
+                            double lj = dj.GetLength(), lp = dp.GetLength(), ln2 = dn.GetLength();
+                            if (lj < 1e-9 || lp < 1e-9 || ln2 < 1e-9) continue;
+                            double angP = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dp) / (lj * lp)))) * 180.0 / Math.PI;
+                            double angN = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dn) / (lj * ln2)))) * 180.0 / Math.PI;
+                            if (angP < JambPerpMinDeg || angN < JambPerpMinDeg) continue;
+
+                            // A jamb is one of a PAIR: door openings produce two
+                            // perpendicular short runs facing each other across
+                            // the opening - parallel to each other, near-equal
+                            // length (both span the wall band), a sibling no
+                            // farther than MaxOpeningGapFt away. A short run
+                            // with no such sibling is a wall line (stub, niche
+                            // edge), NOT a jamb.
+                            XYZ mj = (runs[j].s + runs[j].e) * 0.5;
+                            bool hasSibling = false;
+                            for (int s2 = 0; s2 < runCount && !hasSibling; s2++)
+                            {
+                                if (s2 == j) continue;
+                                XYZ ds2 = runs[s2].e - runs[s2].s;
+                                double ls2 = ds2.GetLength();
+                                if (ls2 < 1e-9) continue;
+                                double parallelDev = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(ds2) / (lj * ls2)))) * 180.0 / Math.PI;
+                                if (parallelDev > JambSiblingParallelTolDeg) continue;
+                                double lenDev = Math.Abs(ls2 - lj);
+                                if (lenDev > JambSiblingLenTol * Math.Max(lj, ls2)) continue;
+                                XYZ ms = (runs[s2].s + runs[s2].e) * 0.5;
+                                if (mj.DistanceTo(ms) > MaxOpeningGapFt) continue;
+                                hasSibling = true;
+                            }
+                            if (!hasSibling) continue;
+                            jambCandidates++;
+                            jambMidpoints.Add(mj);
+                        }
+                    }
+
                     // Pair runs within the loop as wall faces.
-                    for (int a = 0; a < runs.Count; a++)
+                    var runMatched = new bool[runCount];
+                    for (int a = 0; a < runCount; a++)
                     {
                         var sa = runs[a].s;
                         var ea = runs[a].e;
@@ -262,7 +354,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                         if (la < 1e-9) continue;
                         var ua = da / la;
 
-                        for (int b = a + 1; b < runs.Count; b++)
+                        for (int b = a + 1; b < runCount; b++)
                         {
                             var sb = runs[b].s;
                             var eb = runs[b].e;
@@ -279,7 +371,17 @@ namespace RevitMCPCommandSet.Services.Dwg
                             var vv = mb - sa;
                             var perp = vv - ua * vv.DotProduct(ua);
                             double thick = perp.GetLength();
-                            if (thick < minT || thick > maxT) { pairsNoThickness++; continue; }
+                            if (thick < minT || thick > maxT)
+                            {
+                                pairsNoThickness++;
+                                LogReject("pairThickness", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
+                                continue;
+                            }
 
                             double tb0 = (sb - sa).DotProduct(ua) / la;
                             double tb1 = (eb - sa).DotProduct(ua) / la;
@@ -288,7 +390,18 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (hi <= lo) continue;
                             double overlapLen = (hi - lo) * la;
                             double minLen = Math.Min(la, lb);
-                            if (overlapLen / minLen < MinOverlapFrac) { pairsNoOverlap++; continue; }
+                            if (overlapLen / minLen < MinOverlapFrac)
+                            {
+                                pairsNoOverlap++;
+                                LogReject("pairOverlap", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["overlapFrac"] = R2(overlapLen / minLen),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
+                                continue;
+                            }
 
                             // Centerline: mean of point on run a and its projection on run b.
                             var pStart = sa + da * lo;
@@ -298,14 +411,58 @@ namespace RevitMCPCommandSet.Services.Dwg
                             var projE = sb + ub * (pEnd - sb).DotProduct(ub);
                             var c1 = (pEnd + projE) * 0.5;
 
+                            // Poche containment gate: the wall's centerline
+                            // must run through hatch. Test both the exact
+                            // midpoint and, for multi-band assemblies, allow
+                            // the midline to sit just outside a hatch edge
+                            // (adjacent hatch patches leave a thin unfilled
+                            // seam between the wythes).
+                            var mid = (c0 + c1) * 0.5;
+                            if (!InsideAnyPoche(mid, pochePolys, PocheProximityFt))
+                            {
+                                pairsOutsidePoche++;
+                                LogReject("outsidePoche", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["mid"] = P2(mid),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
+                                continue;
+                            }
+                            pairsInsidePoche++;
+
                             centerlinePieces.Add(new[] { c0.X, c0.Y, c1.X, c1.Y, thick, dev2 });
                             pairsMade++;
+                            runMatched[a] = true;
+                            runMatched[b] = true;
                         }
+                    }
+
+                    // Runs that found no partner at all are pure linework /
+                    // opening faces with no second face - record them so the
+                    // cull trail shows which hatch geometry died here.
+                    for (int a = 0; a < runCount; a++)
+                    {
+                        if (runMatched[a]) continue;
+                        var ra = runs[a];
+                        var ua2 = (ra.e - ra.s) / ra.len;
+                        var mid = (ra.s + ra.e) * 0.5;
+                        var nrm = new XYZ(-ua2.Y, ua2.X, 0); // inward probe
+                        LogReject("unpairedRun", new Dictionary<string, object>
+                        {
+                            ["len"] = R2(ra.len),
+                            ["mid"] = P2(mid),
+                            ["probe"] = P2(mid + nrm * Math.Min(maxT, 1.0))
+                        });
                     }
                 }
 
-                // ---- independent collinear merge ----
-                var merged = MergeCollinear(centerlinePieces);
+                // ---- independent collinear merge (with opening bridging) ----
+                var bridgeStats = new BridgeStats();
+                var merged = MergeCollinear(centerlinePieces, jambMidpoints, bridgeStats, rejects);
+
+                int wallsAfterMerge = merged.Count(p => p.Length >= MinWallLengthFt);
 
                 // ---- level / wall types / build ----
                 var wallTypes = new FilteredElementCollector(doc)
@@ -367,13 +524,27 @@ namespace RevitMCPCommandSet.Services.Dwg
                     {
                         if (created >= MaxWalls) break;
 
-                        if (pair.Length < MinWallLengthFt) { rejectedJamb++; continue; }
+                        if (pair.Length < MinWallLengthFt)
+                        {
+                            rejectedJamb++;
+                            LogReject("shortCenterline", new Dictionary<string, object>
+                            {
+                                ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                            });
+                            continue;
+                        }
 
                         if (ExcludeDoorArcs && jambPoints != null &&
                             pair.Length < MinWallLengthFt * 2.0 &&
                             NearJamb(pair.CenterStart, jambPoints) && NearJamb(pair.CenterEnd, jambPoints))
                         {
                             doorArcRejected++;
+                            LogReject("doorArc", new Dictionary<string, object>
+                            {
+                                ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                            });
                             continue;
                         }
 
@@ -419,18 +590,31 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["faceLayerHistogram"] = layerHistogram,
                     ["closedLoops"] = loops.Count,
                     ["straightRuns"] = straightRuns,
+                    ["jambCandidates"] = jambCandidates,
                     ["facePairs"] = pairsMade,
                     ["rejectedPairsThickness"] = pairsNoThickness,
                     ["rejectedPairsOverlap"] = pairsNoOverlap,
                     ["mergedCenterlines"] = merged.Count,
+                    ["wallsPotential"] = wallsAfterMerge,
+                    ["bridgedOpenings"] = bridgeStats.Bridged,
+                    ["unbridgedGaps"] = bridgeStats.Unbridged,
+                    ["straightRuns"] = straightRuns,
+                    ["facePairs"] = pairsMade,
+                    ["rejectedPairsThickness"] = pairsNoThickness,
+                    ["rejectedPairsOverlap"] = pairsNoOverlap,
+                    ["pairsInsidePoche"] = pairsInsidePoche,
+                    ["pairsOutsidePoche"] = pairsOutsidePoche,
+                    ["rejectStageCounts"] = stageCounts,
+                    ["mergedCenterlines"] = merged.Count,
                     ["wallsCreated"] = created,
                     ["rejectedJamb"] = rejectedJamb,
-                    ["doorArcRejected"] = doorArcRejected,
-                    ["buildFailed"] = buildFailed,
-                    ["minWallLengthFt"] = MinWallLengthFt,
-                    ["typeSummary"] = typeSummary,
-                    ["createdIds"] = createdIds,
-                    ["suppressedMessages"] = preprocessor.Log
+                ["doorArcRejected"] = doorArcRejected,
+                ["buildFailed"] = buildFailed,
+                ["minWallLengthFt"] = MinWallLengthFt,
+                ["typeSummary"] = typeSummary,
+                ["createdIds"] = createdIds,
+                ["rejects"] = rejects,
+                ["suppressedMessages"] = preprocessor.Log
                 };
             }
             catch (Exception ex)
@@ -449,8 +633,18 @@ namespace RevitMCPCommandSet.Services.Dwg
         // (RailTolFt) and along-track gap (MergeGapFt). Seam-split runs and
         // opening-split pieces rejoin here; duplicates collapse because a
         // redrawn piece with the same v and overlapping u loses to the longer
-        // rail already in the chain.
-        private List<WallPair> MergeCollinear(List<double[]> pieces)
+        // rail already in the chain.Opening bridging: gaps up to
+        // MaxOpeningGapFt (door openings incl. trim) also merge when the
+        // flanking pieces agree on thickness AND a classified jamb midpoint
+        // sits in the cluster frame near a gap edge (BridgeJambSnapFt).
+        private class BridgeStats
+        {
+            public int Silent;
+            public int Bridged;
+            public int Unbridged;
+        }
+
+        private List<WallPair> MergeCollinear(List<double[]> pieces, List<XYZ> jambMidpoints, BridgeStats stats, List<Dictionary<string, object>> rejects)
         {
             var wallPairs = new List<WallPair>();
             var items = pieces
@@ -530,10 +724,10 @@ namespace RevitMCPCommandSet.Services.Dwg
                 foreach (var f in frags)
                 {
                     if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
-                    else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
-                    else { FlushRail(curRail, railV, railsOut); railV = f[0]; curRail.Add(f); }
-                }
-                FlushRail(curRail, railV, railsOut);
+                else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
+                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, rejects); railV = f[0]; curRail.Add(f); }
+            }
+                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, rejects);
 
                 foreach (var r in railsOut)
                 {
@@ -550,7 +744,9 @@ namespace RevitMCPCommandSet.Services.Dwg
             return wallPairs;
         }
 
-        private static void FlushRail(List<double[]> curRail, double railV, List<object[]> railsOut)
+        private static void FlushRailWithBridge(List<double[]> curRail, double railV, List<object[]> railsOut,
+            double am, double cu, double su, List<XYZ> jambMidpoints, BridgeStats stats,
+            List<Dictionary<string, object>> rejects)
         {
             if (curRail.Count == 0) return;
             curRail.Sort((a, b) => a[1].CompareTo(b[1]));
@@ -558,19 +754,113 @@ namespace RevitMCPCommandSet.Services.Dwg
             for (int k = 1; k < curRail.Count; k++)
             {
                 double f0 = curRail[k][1], f1 = curRail[k][2];
-                if (f0 <= u1 + MergeGapFt)
+                double gap = f0 - u1;
+                if (gap <= MergeGapFt)
                 {
                     if (f1 > u1) u1 = f1;
                     if (curRail[k][3] > thick) thick = curRail[k][3];
+                    stats.Silent++;
+                }
+                else if (gap <= MaxOpeningGapFt &&
+                         Math.Abs(curRail[k][3] - thick) <= BridgeThicknessTolFt &&
+                         HasJambBetween(jambMidpoints, am, railV, u1, f0))
+                {
+                    if (f1 > u1) u1 = f1;
+                    if (curRail[k][3] > thick) thick = curRail[k][3];
+                    stats.Bridged++;
                 }
                 else
                 {
                     railsOut.Add(new object[] { railV, u0, u1, thick });
+                    stats.Unbridged++;
+                    if (rejects != null && rejects.Count < 600)
+                        rejects.Add(new Dictionary<string, object>
+                        {
+                            ["stage"] = "unbridgedGap",
+                            ["gapLen"] = R2(gap),
+                            ["thickA"] = R2(thick), ["thickB"] = R2(curRail[k][3]),
+                            ["gapStart"] = P2(new XYZ(u1 * cu - railV * su, u1 * su + railV * cu, 0)),
+                            ["gapEnd"] = P2(new XYZ(f0 * cu - railV * su, f0 * su + railV * cu, 0))
+                        });
                     u0 = f0; u1 = f1; thick = curRail[k][3];
                 }
             }
             railsOut.Add(new object[] { railV, u0, u1, thick });
             curRail.Clear();
+        }
+
+        // Reject diagnostics: first 600 culled candidates are logged with a
+        // stage tag and geometry (ft, rounded) so runs can be diffed offline.
+
+        // Poche containment: true when p lies inside one of the hatch-fill
+        // polygons, or within toleranceFt of one of their edges. Near-edge
+        // acceptance lets multi-band assemblies (adjacent hatch patches with
+        // a thin unfilled seam between wythes) keep their midline.
+        private static bool InsideAnyPoche(XYZ p, List<List<XYZ>> polys, double toleranceFt)
+        {
+            foreach (var poly in polys)
+            {
+                if (poly == null || poly.Count < 3) continue;
+                if (PointNearOrInsidePoly(poly, p, toleranceFt)) return true;
+            }
+            return false;
+        }
+
+        private static bool PointNearOrInsidePoly(List<XYZ> poly, XYZ p, double toleranceFt)
+        {
+            int n = poly.Count;
+            // near-edge test
+            if (toleranceFt > 0)
+            {
+                for (int i = 0, j = n - 1; i < n; j = i++)
+                {
+                    var a = poly[i]; var b = poly[j];
+                    var ab = b - a;
+                    double L = ab.GetLength();
+                    if (L < 1e-9) continue;
+                    double t = (p - a).DotProduct(ab) / (L * L);
+                    if (t < 0.0 || t > 1.0) continue;
+                    var q = a + ab * t;
+                    if (p.DistanceTo(q) <= toleranceFt) return true;
+                }
+            }
+            // ray-cast parity
+            bool inside = false;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                var a = poly[i]; var b = poly[j];
+                if ((a.Y > p.Y) != (b.Y > p.Y))
+                {
+                    double xInter = (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X;
+                    if (p.X < xInter) inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        private static double R2(double v) { return Math.Round(v, 2); }
+
+        private static double[] P2(XYZ p)
+        {
+            return new[] { Math.Round(p.X, 2), Math.Round(p.Y, 2) };
+        }
+
+        // Bridge evidence test: any classified jamb midpoint lying on the rail
+        // (perpendicular offset within RailTolFt of railV, cluster frame) with
+        // an along-track coordinate near either side of the gap (this is the
+        // opening's face — the closed hatch loop guarantees the jamb corners
+        // touch the wall-face endpoints exactly).
+        private static bool HasJambBetween(List<XYZ> jambMidpoints, double am, double railV, double gapStartU, double gapEndU)
+        {
+            double cu = Math.Cos(am), su = Math.Sin(am);
+            foreach (var jp in jambMidpoints)
+            {
+                double jU = jp.X * cu + jp.Y * su;
+                double jV = -jp.X * su + jp.Y * cu;
+                if (Math.Abs(jV - railV) > RailTolFt) continue;
+                if (gapStartU - BridgeJambSnapFt <= jU && jU <= gapEndU + BridgeJambSnapFt) return true;
+            }
+            return false;
         }
 
         private static XYZ ProjectOnLine(XYZ p, XYZ s, XYZ dirUnit)

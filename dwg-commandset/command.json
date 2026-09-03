@@ -30,7 +30,7 @@
     },
     {
       "commandName": "create_walls_from_dwg_poche",
-      "description": "Generate Revit walls from the hatch fills of a DWG (poche regions): hatch entities are the flat volume-zero solids in the import, their source layer lives on Face.GraphicsStyleId, faces on the requested layer (or all layers) supply boundary loops, collinear edges merge into straight runs, runs pair as wall faces with exact corners, and collinear pieces across loops merge independently; thickness maps to the nearest wall type. For line/polyline work use create_walls_from_dwg_layer.",
+      "description": "Generate Revit walls from the hatch fills of a DWG (poche regions): hatch entities are the flat volume-zero solids in the import, their source layer lives on Face.GraphicsStyleId, faces on the requested layer (or all layers) supply boundary loops, collinear edges merge into straight runs, runs pair as wall faces with exact corners, and collinear pieces across loops merge independently; collinear gaps up to 8ft (door openings) bridge with thickness agreement + jamb-run evidence so walls stay continuous across openings; thickness maps to the nearest wall type. For line/polyline work use create_walls_from_dwg_layer.",
       "assemblyPath": "DwgCommandSet.dll"
     }
   ]
