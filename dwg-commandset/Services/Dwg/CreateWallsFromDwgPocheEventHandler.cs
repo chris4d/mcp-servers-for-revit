@@ -11,19 +11,24 @@ using RevitMCPSDK.API.Interfaces;
 namespace RevitMCPCommandSet.Services.Dwg
 {
     /// <summary>
-    /// Mutating handler that generates Revit walls from HATCH BOUNDARY loops
-    /// (poche regions) in a DWG import. Layer assignment is unreliable in messy
-    /// CAD imports, so this mode ignores layer intent: it scans every closed
-    /// polyline loop the import exposes (hatch boundaries land as closed
-    /// polylines), merges consecutive collinear edges within each loop into
-    /// straight runs, and pairs runs of the same loop as the two faces of a
-    /// wall. Centerline pieces from different loops that are collinear (same
+    /// Mutating handler that generates Revit walls from the HATCH fills of a
+    /// DWG import (poche regions). Lines and polylines are NOT used here —
+    /// that is create_walls_from_dwg_layer's job.DWG hatch entities are
+    /// exposed by Revit's import as flat (volume-zero) solids with no solid
+    /// level GraphicsStyle; the source DWG layer survives one level deeper,
+    /// on Face.GraphicsStyleId of each face. This handler therefore:
+    /// scans the import for flat solids, keeps only faces whose
+    /// Face.GraphicsStyleId resolves to the requested DWG layer (or all faces
+    /// when no layer is given), extracts each face's boundary curve loop
+    /// (tessellated), merges consecutive collinear edges into straight runs,
+    /// and pairs runs of the same face as the two faces of a wall.
+    /// Centerline pieces from different loops that are collinear (same
     /// circular-mean angle within tolerance, same perpendicular offset, small
-    /// gap) merge independently, and duplicates collapse. Thickness imposes the
-    /// 2in..max wall band, so room-sized loops never pair. Piece thickness maps
-    /// to the nearest Revit wall type by compound width. Short centerlines are
-    /// rejected as jamb linework; door-swing arcs optionally reject short
-    /// centerlines near detected jambs.
+    /// gap) merge independently, and duplicate outlines collapse. Thickness
+    /// imposes the 2in..max wall band. Piece thickness maps to the nearest
+    /// Revit wall type by compound width. Short centerlines are rejected as
+    /// jamb linework; door-swing arcs optionally reject short centerlines
+    /// near detected jambs.
     /// </summary>
     public class CreateWallsFromDwgPocheEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
@@ -93,10 +98,28 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                 string layerFilter = string.IsNullOrWhiteSpace(PocheLayer) ? null : PocheLayer.Trim();
 
-                int inspectedPolylines = 0, degenerateVertices = 0, openLoops = 0;
+                int flatSolids = 0, facesInspected = 0, facesKept = 0, degenerateFaces = 0;
                 var loops = new List<List<XYZ>>();
+                var loopSeen = new HashSet<string>();
                 var layerHistogram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 var zValues = new List<double>();
+
+                // Tessellation of one boundary curve loop into a deduped point
+                // ring (no repeated closing vertex).
+                void Tessellate(CurveLoop cl2, List<XYZ> pts)
+                {
+                    foreach (var cv in cl2)
+                    {
+                        Line ln = cv as Line;
+                        if (ln != null)
+                        {
+                            pts.Add(ln.GetEndPoint(0));
+                            continue;
+                        }
+                        foreach (var p in cv.Tessellate())
+                            pts.Add(p);
+                    }
+                }
 
                 void Walk(GeometryElement ge)
                 {
@@ -109,35 +132,54 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (inst != null) Walk(inst);
                             continue;
                         }
-                        var pl = o as PolyLine;
-                        if (pl == null) continue;
+                        var solid = o as Solid;
+                        if (solid == null || solid.Volume >= 1e-6) continue;
+                        flatSolids++;
 
-                        var gs2 = doc.GetElement(o.GraphicsStyleId) as GraphicsStyle;
-                        string layerName = gs2 != null ? gs2.GraphicsStyleCategory.Name : "";
-                        if (layerFilter != null && !string.Equals(layerName, layerFilter, StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        inspectedPolylines++;
-                        if (layerHistogram.ContainsKey(layerName)) layerHistogram[layerName]++; else layerHistogram[layerName] = 1;
-
-                        IList<XYZ> pts = pl.GetCoordinates();
-                        if (pts.Count < 3) { degenerateVertices++; continue; }
-
-                        // Closed test on the RAW vertex list (PolyLine.GetCoordinates
-                        // repeats the first vertex at the end for closed rings).
-                        if (pts[0].DistanceTo(pts[pts.Count - 1]) >= LoopCloseTolFt) { openLoops++; continue; }
-
-                        var vs = new List<XYZ>();
-                        foreach (var p in pts)
+                        foreach (Face f in solid.Faces)
                         {
-                            if (vs.Count > 0 && vs[vs.Count - 1].DistanceTo(p) < 0.01) continue;
-                            vs.Add(p);
-                        }
-                        if (vs.Count >= 2 && vs[0].DistanceTo(vs[vs.Count - 1]) < 0.01) vs.RemoveAt(vs.Count - 1);
-                        if (vs.Count < 3) { degenerateVertices++; continue; }
+                            var gs3 = doc.GetElement(f.GraphicsStyleId) as GraphicsStyle;
+                            string layerName = gs3 != null && gs3.GraphicsStyleCategory != null
+                                ? gs3.GraphicsStyleCategory.Name : "";
+                            facesInspected++;
+                            if (layerHistogram.ContainsKey(layerName)) layerHistogram[layerName]++; else layerHistogram[layerName] = 1;
+                            if (layerFilter != null && !string.Equals(layerName, layerFilter, StringComparison.OrdinalIgnoreCase))
+                                continue;
 
-                        foreach (var p in vs) zValues.Add(p.Z);
-                        loops.Add(vs);
+                            // Only planar faces carry a clean outline.
+                            var pf = f as PlanarFace;
+                            if (pf == null) { degenerateFaces++; continue; }
+
+                            var loopsOfFace = pf.GetEdgesAsCurveLoops();
+                            foreach (var loopDirs in loopsOfFace)
+                            {
+                                var tess = new List<XYZ>();
+                                Tessellate(loopDirs, tess);
+                                if (tess.Count < 3) { degenerateFaces++; continue; }
+
+                                // Dedupe consecutive, drop the repeated closing vertex.
+                                var vs = new List<XYZ>();
+                                foreach (var p in tess)
+                                {
+                                    if (vs.Count > 0 && vs[vs.Count - 1].DistanceTo(p) < 0.01) continue;
+                                    vs.Add(p);
+                                }
+                                if (vs.Count >= 2 && vs[0].DistanceTo(vs[vs.Count - 1]) < 0.01) vs.RemoveAt(vs.Count - 1);
+                                if (vs.Count < 3) { degenerateFaces++; continue; }
+
+                                // Duplicate-outline collapse: top and bottom
+                                // faces of one flat solid share the same outline
+                                // signature.
+                                string sig = string.Join(";", vs.Select(p =>
+                                    Math.Round(p.X * 64.0) + "," + Math.Round(p.Y * 64.0)));
+                                if (loopSeen.Contains(sig)) continue;
+                                loopSeen.Add(sig);
+
+                                facesKept++;
+                                foreach (var p in vs) zValues.Add(p.Z);
+                                loops.Add(vs);
+                            }
+                        }
                     }
                 }
                 var geo = target.get_Geometry(new Options());
@@ -148,10 +190,11 @@ namespace RevitMCPCommandSet.Services.Dwg
                     Result = new Dictionary<string, object>
                     {
                         ["error"] = layerFilter == null
-                            ? "No closed polyline loops found in the DWG"
-                            : $"No closed loops found on layer '{PocheLayer}' of '{targetName}'",
-                        ["inspectedPolylines"] = inspectedPolylines,
-                        ["degenerate"] = degenerateVertices
+                            ? "No flat hatch-fill solids found in the DWG"
+                            : $"No flat hatch-fill faces found on layer '{PocheLayer}' of '{targetName}'",
+                        ["flatSolids"] = flatSolids,
+                        ["facesInspected"] = facesInspected,
+                        ["faceLayerHistogram"] = layerHistogram
                     };
                     return;
                 }
@@ -369,10 +412,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["pocheLayer"] = layerFilter ?? "(all layers)",
                     ["level"] = new Dictionary<string, object> { ["id"] = DwgCurveSource.IdValue(level), ["name"] = level.Name },
                     ["heightFt"] = HeightFt,
-                    ["inspectedPolylines"] = inspectedPolylines,
-                    ["openLoops"] = openLoops,
+                    ["flatSolids"] = flatSolids,
+                    ["facesInspected"] = facesInspected,
+                    ["facesKept"] = facesKept,
+                    ["degenerateFaces"] = degenerateFaces,
+                    ["faceLayerHistogram"] = layerHistogram,
                     ["closedLoops"] = loops.Count,
-                    ["layerHistogram"] = layerHistogram,
                     ["straightRuns"] = straightRuns,
                     ["facePairs"] = pairsMade,
                     ["rejectedPairsThickness"] = pairsNoThickness,

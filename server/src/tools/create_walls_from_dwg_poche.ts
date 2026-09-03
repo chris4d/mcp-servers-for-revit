@@ -5,7 +5,7 @@ import { withRevitConnection } from "../utils/ConnectionManager.js";
 export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
   server.tool(
     "create_walls_from_dwg_poche",
-    "Generate Revit walls from hatch boundary loops (poche regions) in an imported or linked DWG. Best for 'messy' imports where linework is split across pen layers: the hatch poché around walls is extracted as closed polyline loops regardless of layer; consecutive collinear edges within each loop merge into straight runs, runs pair as the two faces of one wall (exact corners), and collinear pieces across loops merge independently. Loops wider than the thickness band (2in..maxWallThicknessFt) are ignored automatically (room fills etc). Thickness maps to the nearest Revit wall type by compound width. Short centerlines are rejected as door-jamb linework; door-swing arcs optionally reject short centers.",
+    "Generate Revit walls from the hatch fills of an imported or linked DWG (poche regions). Works on the programmatic representation of graphical hatches: DWG hatch entities come into Revit as flat (volume-zero) solids with no solid-level layer; the source DWG layer lives on Face.GraphicsStyleId of each face. This tool scans flat solids, keeps faces on the requested DWG layer (or all of them if no layer is given), extracts each face's boundary loop, merges collinear edges into straight runs, pairs runs as the two faces of one wall (exact corners), and merges collinear centerline pieces across loops. Regions wider than the thickness band (2in..maxWallThicknessFt) are ignored automatically (room fills etc). Thickness maps to the nearest Revit wall type by compound width. Short centerlines are rejected as door-jamb linework; door-swing arcs optionally reject short centers. Use create_walls_from_dwg_layer instead when you want to work with lines and polylines.",
     {
       dwgNameOrId: z
         .string()
@@ -13,7 +13,7 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
       pocheLayer: z
         .string()
         .optional()
-        .describe("Optional DWG layer name to restrict which closed loops count as poche. Omit to accept loops from every layer (recommended for messy imports)."),
+        .describe("Optional DWG layer to restrict which hatch-fill faces count as poche (matched on Face.GraphicsStyleId, case-insensitive). Omit to accept hatch fills from every layer."),
       heightFt: z
         .number()
         .positive()
@@ -40,7 +40,7 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
         .number()
         .int()
         .optional()
-        .describe("Optional Revit level ElementId. If omitted, the level nearest the poche vertices' median Z is used."),
+        .describe("Optional Revit level ElementId. If omitted, the level nearest the hatch-fill vertices' median Z is used."),
       excludeDoorArcs: z
         .boolean()
         .default(true)
