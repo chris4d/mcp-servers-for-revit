@@ -66,6 +66,8 @@ namespace RevitMCPCommandSet.Services.Dwg
         private const double BridgeThicknessTolFt = 0.05; // same-wall thickness agreement
         private const double JambRatio = 0.35;        // short run vs neighbor lengths
         private const double JambPerpMinDeg = 60.0;   // jamb-vs-neighbor perpendicularity floor
+        private const double JambSiblingParallelTolDeg = 10.0; // sibling runs face each other
+        private const double JambSiblingLenTol = 0.25;  // near-equal lengths (both span the band)
         private const double BridgeJambSnapFt = 0.6;  // jamb midpoint may sit near a gap edge
 
         public object Result { get; private set; }
@@ -286,8 +288,33 @@ namespace RevitMCPCommandSet.Services.Dwg
                             double angP = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dp) / (lj * lp)))) * 180.0 / Math.PI;
                             double angN = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dn) / (lj * ln2)))) * 180.0 / Math.PI;
                             if (angP < JambPerpMinDeg || angN < JambPerpMinDeg) continue;
+
+                            // A jamb is one of a PAIR: door openings produce two
+                            // perpendicular short runs facing each other across
+                            // the opening - parallel to each other, near-equal
+                            // length (both span the wall band), a sibling no
+                            // farther than MaxOpeningGapFt away. A short run
+                            // with no such sibling is a wall line (stub, niche
+                            // edge), NOT a jamb.
+                            XYZ mj = (runs[j].s + runs[j].e) * 0.5;
+                            bool hasSibling = false;
+                            for (int s2 = 0; s2 < runCount && !hasSibling; s2++)
+                            {
+                                if (s2 == j) continue;
+                                XYZ ds2 = runs[s2].e - runs[s2].s;
+                                double ls2 = ds2.GetLength();
+                                if (ls2 < 1e-9) continue;
+                                double parallelDev = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(ds2) / (lj * ls2)))) * 180.0 / Math.PI;
+                                if (parallelDev > JambSiblingParallelTolDeg) continue;
+                                double lenDev = Math.Abs(ls2 - lj);
+                                if (lenDev > JambSiblingLenTol * Math.Max(lj, ls2)) continue;
+                                XYZ ms = (runs[s2].s + runs[s2].e) * 0.5;
+                                if (mj.DistanceTo(ms) > MaxOpeningGapFt) continue;
+                                hasSibling = true;
+                            }
+                            if (!hasSibling) continue;
                             jambCandidates++;
-                            jambMidpoints.Add((runs[j].s + runs[j].e) * 0.5);
+                            jambMidpoints.Add(mj);
                         }
                     }
 
