@@ -57,7 +57,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         wallResults.Add(new
                         {
-                            Id = w.Id.IntegerValue,
+                            Id = w.Id.GetIntValue(),
                             TypeName = w.WallType?.Name ?? "?",
                             P0 = FormatPt(line.GetEndPoint(0)),
                             P1 = FormatPt(line.GetEndPoint(1)),
@@ -70,7 +70,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 // Beams
                 var beams = new FilteredElementCollector(document)
                     .OfClass(typeof(FamilyInstance)).WhereElementIsNotElementType().Cast<FamilyInstance>()
-                    .Where(fi => fi.Category != null && fi.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFraming
+                    .Where(fi => fi.Category != null && fi.Category.Id.GetIntValue() == (int)BuiltInCategory.OST_StructuralFraming
                         && fi.Location is LocationCurve lc && lc.Curve is Line)
                     .ToList();
 
@@ -83,7 +83,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         beamResults.Add(new
                         {
-                            Id = b.Id.IntegerValue,
+                            Id = b.Id.GetIntValue(),
                             TypeName = b.Symbol?.Name ?? "?",
                             P0 = FormatPt(line.GetEndPoint(0)),
                             P1 = FormatPt(line.GetEndPoint(1)),
@@ -108,7 +108,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         gridResults.Add(new
                         {
-                            Id = g.Id.IntegerValue,
+                            Id = g.Id.GetIntValue(),
                             TypeName = g.Name,
                             P0 = FormatPt(line.GetEndPoint(0)),
                             P1 = FormatPt(line.GetEndPoint(1)),
@@ -155,7 +155,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         floorResults.Add(new
                         {
-                            Id = fl.Id.IntegerValue,
+                            Id = fl.Id.GetIntValue(),
                             TypeName = fl.FloorType?.Name ?? "?",
                             OffAxisLines = offLines
                         });
@@ -199,7 +199,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         ceilingResults.Add(new
                         {
-                            Id = ce.Id.IntegerValue,
+                            Id = ce.Id.GetIntValue(),
                             TypeName = ce.Name ?? "?",
                             OffAxisLines = offLines
                         });
@@ -228,7 +228,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                                     {
                                         offLines.Add(new
                                         {
-                                            Id = mc.Id.IntegerValue,
+                                            Id = mc.Id.GetIntValue(),
                                             P0 = FormatPt(line.GetEndPoint(0)),
                                             P1 = FormatPt(line.GetEndPoint(1)),
                                             AngleDeg = Math.Round(angle, 4),
@@ -245,7 +245,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     {
                         roofResults.Add(new
                         {
-                            Id = rf.Id.IntegerValue,
+                            Id = rf.Id.GetIntValue(),
                             TypeName = rf.RoofType?.Name ?? "?",
                             OffAxisLines = offLines
                         });

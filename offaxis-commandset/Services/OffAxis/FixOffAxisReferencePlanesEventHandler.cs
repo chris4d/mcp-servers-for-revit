@@ -80,7 +80,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             foreach (Reference r in refs)
                             {
                                 if (r.ElementId != ElementId.InvalidElementId)
-                                    constrainedIds.Add(r.ElementId.IntegerValue);
+                                    constrainedIds.Add(r.ElementId.GetIntValue());
                             }
                         }
                     }
@@ -103,7 +103,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(angle);
                     if (dev <= MinDeviationDeg || dev >= MaxDeviationDeg) continue;
 
-                    if (isTargetedMode && !TargetIds.Contains(rp.Id.IntegerValue)) continue;
+                    if (isTargetedMode && !TargetIds.Contains(rp.Id.GetIntValue())) continue;
                     offAxisRefPlanes.Add(rp);
                 }
 
@@ -114,7 +114,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 foreach (var rp in offAxisRefPlanes)
                 {
-                    int id = rp.Id.IntegerValue;
+                    int id = rp.Id.GetIntValue();
 
                     if (rp.Pinned)
                     {

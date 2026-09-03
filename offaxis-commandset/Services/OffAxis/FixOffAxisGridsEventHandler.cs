@@ -58,7 +58,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     double ang = OffAxisGeometryUtils.LineAngleDeg2D(ln);
                     double dev = OffAxisGeometryUtils.DeviationFromAxis(ang);
                     if (dev <= MinDeviationDeg || dev >= MaxDeviationDeg) continue;
-                    if (isTargetedMode && !TargetIds.Contains(g.Id.IntegerValue)) continue;
+                    if (isTargetedMode && !TargetIds.Contains(g.Id.GetIntValue())) continue;
                     offAxisGrids.Add(g);
                 }
 
@@ -69,7 +69,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 foreach (var grid in offAxisGrids)
                 {
-                    int id = grid.Id.IntegerValue;
+                    int id = grid.Id.GetIntValue();
 
                     if (grid.Pinned)
                     {

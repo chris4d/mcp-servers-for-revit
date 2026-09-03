@@ -80,7 +80,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             for (int i = 0; i < refs.Size; i++)
                             {
                                 var el = document.GetElement(refs.get_Item(i));
-                                if (el != null) dimConstrained.Add(el.Id.IntegerValue);
+                                if (el != null) dimConstrained.Add(el.Id.GetIntValue());
                             }
                         }
                     }
@@ -113,18 +113,18 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         if (inPlaceInst == null && e is FamilyInstance fi && (fi.Symbol?.Family?.IsInPlace ?? false))
                             inPlaceInst = fi;
                         else if (!formId.HasValue && (e.GetType().Name == "Extrusion" || advisoryFormTypes.Contains(e.GetType().Name)))
-                            formId = e.Id.IntegerValue;
+                            formId = e.Id.GetIntValue();
                         else if (e is ModelCurve mc)
                         {
                             string cn = mc.Category?.Name ?? "";
-                            if (cn.Contains("Sketch") || mc.Category?.Id.IntegerValue == -2000045)
-                                warnLines.Add(mc.Id.IntegerValue);
+                            if (cn.Contains("Sketch") || mc.Category?.Id.GetIntValue() == -2000045)
+                                warnLines.Add(mc.Id.GetIntValue());
                         }
                     }
 
                     if (inPlaceInst == null || !formId.HasValue) continue;
 
-                    int hostId = inPlaceInst.Id.IntegerValue;
+                    int hostId = inPlaceInst.Id.GetIntValue();
                     string hostCat = inPlaceInst.Category?.Name ?? "";
                     string hostFam = inPlaceInst.Symbol?.Family?.Name ?? "";
 
@@ -189,7 +189,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                     foreach (var m in mcs)
                     {
-                        int lineId = m.Id.IntegerValue;
+                        int lineId = m.Id.GetIntValue();
                         if (!(m.GeometryCurve is Line gl)) continue;
                         XYZ wP0 = gl.GetEndPoint(0), wP1 = gl.GetEndPoint(1);
                         XYZ wd = wP1 - wP0;
@@ -292,7 +292,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             double bestDev = OffAxisGeometryUtils.WorldDev(wu);
                             XYZ bestAxis = OffAxisGeometryUtils.ClosestWorldCandidate(wu);
 
-                            bool warned = mcRef[j] != null && flaggedLines.Contains(mcRef[j].Id.IntegerValue);
+                            bool warned = mcRef[j] != null && flaggedLines.Contains(mcRef[j].Id.GetIntValue());
                             bool inBand = bestDev >= MinDeviationDeg && bestDev <= MaxDeviationDeg;
                             bool shouldSnap = isTargetedMode ? warned : (warned || inBand);
 
