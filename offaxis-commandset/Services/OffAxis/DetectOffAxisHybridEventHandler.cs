@@ -96,11 +96,11 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             }
                             else if (IsSketchLine(e))
                             {
-                                ipLines.Add(e.Id.IntegerValue);
+                                ipLines.Add(e.Id.GetIntValue());
                             }
                         }
 
-                        int hid = inPlaceInstance.Id.IntegerValue;
+                        int hid = inPlaceInstance.Id.GetIntValue();
                         if (inPlaceMeta.ContainsKey(hid))
                         {
                             if (!string.IsNullOrEmpty(formType) && string.IsNullOrEmpty(inPlaceMeta[hid]["FormType"]))
@@ -133,9 +133,9 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         {
                             if (IsSketchLine(e))
                             {
-                                int hid = host.Id.IntegerValue;
+                                int hid = host.Id.GetIntValue();
                                 if (!sketchLineIds.ContainsKey(hid)) sketchLineIds[hid] = new HashSet<int>();
-                                if (sketchLineIds[hid].Add(e.Id.IntegerValue)) sketchHosts[hid] = host;
+                                if (sketchLineIds[hid].Add(e.Id.GetIntValue())) sketchHosts[hid] = host;
                             }
                             continue;
                         }
@@ -143,7 +143,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         string key = HandlerKey(e);
                         if (key == "Wall" || key == "Beam" || key == "Grid" || key == "ReferencePlane" || key == "ModelLine")
                         {
-                            if (processed.Add(e.Id.IntegerValue))
+                            if (processed.Add(e.Id.GetIntValue()))
                             {
                                 object entry = BuildSingular(document, e, key);
                                 if (entry != null) fixable.Add(entry);
@@ -153,7 +153,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         {
                             unresolvedSketchLines.Add(new
                             {
-                                ElementId = e.Id.IntegerValue,
+                                ElementId = e.Id.GetIntValue(),
                                 ElementType = e.GetType().Name,
                                 Category = e.Category?.Name,
                                 Status = "UNRESOLVED sketch line (no host in warning)"
@@ -165,7 +165,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             try { desc = w.GetDescriptionText(); } catch { desc = "?"; }
                             unsupported.Add(new
                             {
-                                ElementId = e.Id.IntegerValue,
+                                ElementId = e.Id.GetIntValue(),
                                 ElementType = e.GetType().Name,
                                 Category = e.Category?.Name ?? "None",
                                 WarningText = desc.Length > 80 ? desc.Substring(0, 80) : desc
@@ -353,7 +353,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
         private static bool IsSketchLine(Element e)
         {
             if (!(e is ModelCurve)) return false;
-            int catId = e.Category?.Id.IntegerValue ?? -1;
+            int catId = e.Category?.Id.GetIntValue() ?? -1;
             string catName = e.Category?.Name ?? "";
             return catName.Contains("Sketch") || catId == -2000045;
         }
@@ -366,7 +366,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
             if (e is Floor) return "Floor";
             if (e is Ceiling) return "Ceiling";
             if (e is FootPrintRoof) return "Roof";
-            if (e is FamilyInstance fi && fi.Category != null && fi.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFraming)
+            if (e is FamilyInstance fi && fi.Category != null && fi.Category.Id.GetIntValue() == (int)BuiltInCategory.OST_StructuralFraming)
                 return "Beam";
             if (e is ModelCurve mcur && mcur.Category != null && !(mcur.Category.Name ?? "").Contains("Sketch"))
                 return "ModelLine";
@@ -403,7 +403,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 double swing = OffAxisGeometryUtils.OccupiedSwingInches(ln.Length, dev);
                 return new
                 {
-                    ElementId = e.Id.IntegerValue,
+                    ElementId = e.Id.GetIntValue(),
                     Category = key,
                     ElementType = e.GetType().Name,
                     TypeName = SafeTypeName(doc, e),
@@ -424,7 +424,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 double swing = OffAxisGeometryUtils.OccupiedSwingInches(gl.Length, dev);
                 return new
                 {
-                    ElementId = e.Id.IntegerValue,
+                    ElementId = e.Id.GetIntValue(),
                     Category = "Grid",
                     ElementType = "Grid",
                     TypeName = g.Name,
@@ -445,12 +445,12 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 double swing = OffAxisGeometryUtils.OccupiedSwingInches(mll.Length, dev);
                 return new
                 {
-                    ElementId = e.Id.IntegerValue,
+                    ElementId = e.Id.GetIntValue(),
                     Category = e.Category?.Name ?? "ModelLine",
                     ElementType = e.GetType().Name,
                     TypeName = e.Category?.Name ?? e.GetType().Name,
                     Fixer = "FixModelLines",
-                    Target = e.Id.IntegerValue.ToString(),
+                    Target = e.Id.GetIntValue().ToString(),
                     AngleDeg = Math.Round(ang, 4),
                     DeviationDeg = Math.Round(dev, 4),
                     SnapTargetDeg = OffAxisGeometryUtils.SnapTargetDeg(ang),
@@ -473,7 +473,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 double swing = OffAxisGeometryUtils.OccupiedSwingInches(len, dev);
                 return new
                 {
-                    ElementId = e.Id.IntegerValue,
+                    ElementId = e.Id.GetIntValue(),
                     Category = "ReferencePlane",
                     ElementType = "ReferencePlane",
                     TypeName = rp.Name,

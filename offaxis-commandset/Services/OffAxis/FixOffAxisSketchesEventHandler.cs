@@ -77,7 +77,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 bool LineAllowed(ModelCurve mc)
                 {
-                    return !lineFilterActive || (mc != null && TargetLines.Contains(mc.Id.IntegerValue));
+                    return !lineFilterActive || (mc != null && TargetLines.Contains(mc.Id.GetIntValue()));
                 }
 
                 List<int> GetHostedElementIds(Element elem)
@@ -90,7 +90,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             var inserts = ho.FindInserts(false, false, false, true);
                             if (inserts != null && inserts.Count > 0)
                             {
-                                foreach (var id in inserts) ids.Add(id.IntegerValue);
+                                foreach (var id in inserts) ids.Add(id.GetIntValue());
                             }
                         }
                         catch { }
@@ -111,7 +111,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             for (int i = 0; i < refs.Size; i++)
                             {
                                 var el = document.GetElement(refs.get_Item(i));
-                                if (el != null) dimConstrained.Add(el.Id.IntegerValue);
+                                if (el != null) dimConstrained.Add(el.Id.GetIntValue());
                             }
                         }
                     }
@@ -269,7 +269,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 SketchFixResult ProcessSketchBased(Element elem, string category)
                 {
-                    int id = elem.Id.IntegerValue;
+                    int id = elem.Id.GetIntValue();
                     if (elem.Pinned) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - pinned", LargeFix = false };
                     if (dimConstrained.Contains(id)) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - dimension constrained", LargeFix = false };
 
@@ -407,7 +407,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 SketchFixResult ProcessRoof(FootPrintRoof roof)
                 {
-                    int id = roof.Id.IntegerValue;
+                    int id = roof.Id.GetIntValue();
                     string category = "Roof";
                     if (roof.Pinned) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - pinned", LargeFix = false };
                     if (dimConstrained.Contains(id)) return new SketchFixResult { ElementId = id, Category = category, Status = "SKIP - dimension constrained", LargeFix = false };
@@ -544,18 +544,18 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 foreach (var fl in allFloors)
                 {
-                    if (!isTargetedMode || TargetHosts.Contains(fl.Id.IntegerValue))
-                        allCandidates.Add((fl.Id.IntegerValue, "Floor", fl));
+                    if (!isTargetedMode || TargetHosts.Contains(fl.Id.GetIntValue()))
+                        allCandidates.Add((fl.Id.GetIntValue(), "Floor", fl));
                 }
                 foreach (var cl in allCeilings)
                 {
-                    if (!isTargetedMode || TargetHosts.Contains(cl.Id.IntegerValue))
-                        allCandidates.Add((cl.Id.IntegerValue, "Ceiling", cl));
+                    if (!isTargetedMode || TargetHosts.Contains(cl.Id.GetIntValue()))
+                        allCandidates.Add((cl.Id.GetIntValue(), "Ceiling", cl));
                 }
                 foreach (var rf in allRoofs)
                 {
-                    if (!isTargetedMode || TargetHosts.Contains(rf.Id.IntegerValue))
-                        allCandidates.Add((rf.Id.IntegerValue, "Roof", rf));
+                    if (!isTargetedMode || TargetHosts.Contains(rf.Id.GetIntValue()))
+                        allCandidates.Add((rf.Id.GetIntValue(), "Roof", rf));
                 }
 
                 int truncated = 0;

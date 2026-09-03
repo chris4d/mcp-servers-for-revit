@@ -106,7 +106,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             for (int i = 0; i < refs.Size; i++)
                             {
                                 var elem = document.GetElement(refs.get_Item(i));
-                                if (elem != null) constrainedIds.Add(elem.Id.IntegerValue);
+                                if (elem != null) constrainedIds.Add(elem.Id.GetIntValue());
                             }
                         }
                     }

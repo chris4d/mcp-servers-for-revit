@@ -77,7 +77,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             foreach (Reference r in refs)
                             {
                                 if (r.ElementId != ElementId.InvalidElementId)
-                                    dimConstrained.Add(r.ElementId.IntegerValue);
+                                    dimConstrained.Add(r.ElementId.GetIntValue());
                             }
                         }
                     }
@@ -87,15 +87,15 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 // Safety: hosted inserts
                 var hostedWallIds = new HashSet<int>(new FilteredElementCollector(document)
                     .OfClass(typeof(FamilyInstance)).WhereElementIsNotElementType().Cast<FamilyInstance>()
-                    .Where(fi => fi.Host != null && (fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Doors || fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Windows))
-                    .Select(fi => fi.Host.Id.IntegerValue));
+                    .Where(fi => fi.Host != null && (fi.Category?.Id.GetIntValue() == (int)BuiltInCategory.OST_Doors || fi.Category?.Id.GetIntValue() == (int)BuiltInCategory.OST_Windows))
+                    .Select(fi => fi.Host.Id.GetIntValue()));
 
                 // All walls & beams
                 var allWalls = new FilteredElementCollector(document).OfClass(typeof(Wall)).WhereElementIsNotElementType().Cast<Wall>()
                     .Where(w => w.Location is LocationCurve lc && lc.Curve is Line).ToList();
 
                 var allBeams = new FilteredElementCollector(document).OfClass(typeof(FamilyInstance)).WhereElementIsNotElementType().Cast<FamilyInstance>()
-                    .Where(fi => fi.Category != null && fi.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFraming
+                    .Where(fi => fi.Category != null && fi.Category.Id.GetIntValue() == (int)BuiltInCategory.OST_StructuralFraming
                         && fi.Location is LocationCurve lc && lc.Curve is Line).ToList();
 
                 // Wall endpoints for join detection
@@ -103,7 +103,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 foreach (var w in allWalls)
                 {
                     var ln = (Line)((LocationCurve)w.Location).Curve;
-                    allEndpoints.Add((w.Id.IntegerValue, ln.GetEndPoint(0), ln.GetEndPoint(1)));
+                    allEndpoints.Add((w.Id.GetIntValue(), ln.GetEndPoint(0), ln.GetEndPoint(1)));
                 }
 
                 bool SharesEndpoint(int wId, XYZ pt)
@@ -138,7 +138,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 // 1. Process Walls
                 foreach (var wall in allWalls)
                 {
-                    int wid = wall.Id.IntegerValue;
+                    int wid = wall.Id.GetIntValue();
                     var lc = (LocationCurve)wall.Location;
                     var origLine = (Line)lc.Curve;
                     double angle = OffAxisGeometryUtils.LineAngleDeg2D(origLine);
@@ -259,7 +259,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 // 2. Process Beams
                 foreach (var beam in allBeams)
                 {
-                    int bid = beam.Id.IntegerValue;
+                    int bid = beam.Id.GetIntValue();
                     var lc = (LocationCurve)beam.Location;
                     var origLine = (Line)lc.Curve;
                     double angle = OffAxisGeometryUtils.LineAngleDeg2D(origLine);

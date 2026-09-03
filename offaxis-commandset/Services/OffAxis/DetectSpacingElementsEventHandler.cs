@@ -79,7 +79,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     if (g.Curve is Line ln)
                     {
                         var geo = ComputeGeo(ln);
-                        gridRecs.Add((g.Id.IntegerValue, geo.P, geo.Ang));
+                        gridRecs.Add((g.Id.GetIntValue(), geo.P, geo.Ang));
                     }
                 }
 
@@ -109,7 +109,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             foreach (Reference r in refs)
                             {
                                 if (r.ElementId != ElementId.InvalidElementId)
-                                    dimConstrained.Add(r.ElementId.IntegerValue);
+                                    dimConstrained.Add(r.ElementId.GetIntValue());
                             }
                         }
                     }
@@ -119,8 +119,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 // Hosted doors/windows
                 var hostedIds = new HashSet<int>(new FilteredElementCollector(document)
                     .OfClass(typeof(FamilyInstance)).WhereElementIsNotElementType().Cast<FamilyInstance>()
-                    .Where(fi => fi.Host != null && (fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Doors || fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Windows))
-                    .Select(fi => fi.Host.Id.IntegerValue));
+                    .Where(fi => fi.Host != null && (fi.Category?.Id.GetIntValue() == (int)BuiltInCategory.OST_Doors || fi.Category?.Id.GetIntValue() == (int)BuiltInCategory.OST_Windows))
+                    .Select(fi => fi.Host.Id.GetIntValue()));
 
                 var movable = new List<(int id, string cn, double p, double len, double ang, string typeName)>();
 
@@ -128,7 +128,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 foreach (var w in new FilteredElementCollector(document).OfClass(typeof(Wall)).WhereElementIsNotElementType().Cast<Wall>())
                 {
                     if (!(w.Location is LocationCurve lc) || !(lc.Curve is Line ln) || w.Pinned) continue;
-                    if (hostedIds.Contains(w.Id.IntegerValue) || dimConstrained.Contains(w.Id.IntegerValue)) continue;
+                    if (hostedIds.Contains(w.Id.GetIntValue()) || dimConstrained.Contains(w.Id.GetIntValue())) continue;
                     if (ln.Length < 0.5) continue;
 
                     // Exclude API joined
@@ -140,18 +140,18 @@ namespace RevitMCPCommandSet.Services.OffAxis
                     catch { }
 
                     var geo = ComputeGeo(ln);
-                    movable.Add((w.Id.IntegerValue, "Wall", geo.P, geo.Len, geo.Ang, w.WallType?.Name ?? "?"));
+                    movable.Add((w.Id.GetIntValue(), "Wall", geo.P, geo.Len, geo.Ang, w.WallType?.Name ?? "?"));
                 }
 
                 // Beams
                 foreach (var fi in new FilteredElementCollector(document).OfClass(typeof(FamilyInstance)).WhereElementIsNotElementType().Cast<FamilyInstance>())
                 {
-                    if (fi.Category?.Id.IntegerValue != (int)BuiltInCategory.OST_StructuralFraming) continue;
+                    if (fi.Category?.Id.GetIntValue() != (int)BuiltInCategory.OST_StructuralFraming) continue;
                     if (!(fi.Location is LocationCurve lc) || !(lc.Curve is Line ln) || fi.Pinned) continue;
-                    if (dimConstrained.Contains(fi.Id.IntegerValue) || ln.Length < 0.5) continue;
+                    if (dimConstrained.Contains(fi.Id.GetIntValue()) || ln.Length < 0.5) continue;
 
                     var geo = ComputeGeo(ln);
-                    movable.Add((fi.Id.IntegerValue, "Beam", geo.P, geo.Len, geo.Ang, fi.Symbol?.Name ?? "?"));
+                    movable.Add((fi.Id.GetIntValue(), "Beam", geo.P, geo.Len, geo.Ang, fi.Symbol?.Name ?? "?"));
                 }
 
                 var targets = new List<object>();

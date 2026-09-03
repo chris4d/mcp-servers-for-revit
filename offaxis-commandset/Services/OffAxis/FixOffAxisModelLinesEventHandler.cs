@@ -78,7 +78,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                             for (int i = 0; i < refs.Size; i++)
                             {
                                 var el2 = document.GetElement(refs.get_Item(i));
-                                if (el2 != null) constrainedIds.Add(el2.Id.IntegerValue);
+                                if (el2 != null) constrainedIds.Add(el2.Id.GetIntValue());
                             }
                         }
                     }
@@ -144,7 +144,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         if (len < 1e-9) return null;
                         D[j] = new XYZ(d.X / len, d.Y / len, 0);
                         Q[j] = new XYZ((lo.X + hi.X) / 2.0, (lo.Y + hi.Y) / 2.0, 0);
-                        if (flagged.Contains(chain[j].Id.IntegerValue))
+                        if (flagged.Contains(chain[j].Id.GetIntValue()))
                         {
                             XYZ axis = OffAxisGeometryUtils.ClosestWorldCandidate(d / len);
                             if (Math.Abs(axis.Z) > 0.5) return null;
@@ -201,7 +201,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                 List<ModelCurve> BuildChain(ModelCurve start)
                 {
                     var chain = new List<ModelCurve> { start };
-                    var inChain = new HashSet<int> { start.Id.IntegerValue };
+                    var inChain = new HashSet<int> { start.Id.GetIntValue() };
                     bool grown;
                     do
                     {
@@ -212,8 +212,8 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         var frontCand = new List<ModelCurve>();
                         foreach (var c in allCurves)
                         {
-                            if (inChain.Contains(c.Id.IntegerValue)) continue;
-                            if (c.Pinned || constrainedIds.Contains(c.Id.IntegerValue)) continue;
+                            if (inChain.Contains(c.Id.GetIntValue())) continue;
+                            if (c.Pinned || constrainedIds.Contains(c.Id.GetIntValue())) continue;
                             if (!(c.GeometryCurve is Line ln)) continue;
                             if (ln.GetEndPoint(0).DistanceTo(f0) < tol || ln.GetEndPoint(1).DistanceTo(f0) < tol)
                                 frontCand.Add(c);
@@ -221,15 +221,15 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         if (frontCand.Count == 1)
                         {
                             chain.Insert(0, frontCand[0]);
-                            inChain.Add(frontCand[0].Id.IntegerValue);
+                            inChain.Add(frontCand[0].Id.GetIntValue());
                             grown = true;
                         }
                         var l1 = (last.GeometryCurve as Line).GetEndPoint(1);
                         var backCand = new List<ModelCurve>();
                         foreach (var c in allCurves)
                         {
-                            if (inChain.Contains(c.Id.IntegerValue)) continue;
-                            if (c.Pinned || constrainedIds.Contains(c.Id.IntegerValue)) continue;
+                            if (inChain.Contains(c.Id.GetIntValue())) continue;
+                            if (c.Pinned || constrainedIds.Contains(c.Id.GetIntValue())) continue;
                             if (!(c.GeometryCurve is Line ln)) continue;
                             if (ln.GetEndPoint(0).DistanceTo(l1) < tol || ln.GetEndPoint(1).DistanceTo(l1) < tol)
                                 backCand.Add(c);
@@ -237,7 +237,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
                         if (backCand.Count == 1)
                         {
                             chain.Add(backCand[0]);
-                            inChain.Add(backCand[0].Id.IntegerValue);
+                            inChain.Add(backCand[0].Id.GetIntValue());
                             grown = true;
                         }
                     } while (grown && chain.Count < 2000);
@@ -251,7 +251,7 @@ namespace RevitMCPCommandSet.Services.OffAxis
 
                 foreach (var mc in requested)
                 {
-                    int id = mc.Id.IntegerValue;
+                    int id = mc.Id.GetIntValue();
                     Line gl = mc.GeometryCurve as Line;
                     if (gl == null)
                     {
