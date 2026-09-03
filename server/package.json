@@ -53,5 +53,8 @@
         "@types/ws": "^8.18.0",
         "rimraf": "^5.0.10",
         "typescript": "^5.8.2"
+    },
+    "allowScripts": {
+        "better-sqlite3@12.11.1": true
     }
 }
