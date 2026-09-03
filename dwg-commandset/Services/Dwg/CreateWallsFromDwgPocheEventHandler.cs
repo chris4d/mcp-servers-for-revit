@@ -51,10 +51,22 @@ namespace RevitMCPCommandSet.Services.Dwg
         private const double PairAngleTolDeg = 2.0;            // face pairing parallelism
         private const double MinOverlapFrac = 0.7;
         private const double ClusterAngleTolRad = 2.0 * Math.PI / 180.0; // piece clustering
-        private const double MergeGapFt = 0.5;                 // independent collinear merge gap
+        private const double MergeGapFt = 0.5;                 // silent merge gap (drafting slop)
         private const double LoopCloseTolFt = 0.01;
         private const double MinRunFt = 0.3;                   // debris threshold for a face run
         private const double JambSnapFt = 0.35;
+
+        // Opening bridging: walls are placed continuous across door openings
+        // (doors get inserted later and cut real openings). A collinear gap on
+        // the same rail up to MaxOpeningGapFt (doors incl. jamb trim; large
+        // double doors) is bridged when both flanking pieces agree on measured
+        // thickness AND a short perpendicular jamb run (the opening face)
+        // brackets the gap. Gaps without jamb evidence stay separate.
+        private const double MaxOpeningGapFt = 8.0;   // max bridged door opening
+        private const double BridgeThicknessTolFt = 0.05; // same-wall thickness agreement
+        private const double JambRatio = 0.35;        // short run vs neighbor lengths
+        private const double JambPerpMinDeg = 60.0;   // jamb-vs-neighbor perpendicularity floor
+        private const double BridgeJambSnapFt = 0.6;  // jamb midpoint may sit near a gap edge
 
         public object Result { get; private set; }
 
@@ -203,7 +215,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                 double minT = MinWallThicknessFt;
                 double maxT = MaxWallThicknessFt;
                 var centerlinePieces = new List<double[]>(); // sX,sY,eX,eY,thick
+                var jambMidpoints = new List<XYZ>();         // opening-face run midpoints (bridging evidence)
                 int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;
+                int jambCandidates = 0;
 
                 foreach (var vs in loops)
                 {
@@ -213,7 +227,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     // Merge consecutive collinear edges into straight runs.
                     // NOTE: rings come deduped WITHOUT the repeated closing
                     // vertex — the ring edge wraps via (k+1)%n.
-                    var runs = new List<(XYZ s, XYZ e)>();
+                    var runs = new List<(XYZ s, XYZ e, double len)>();
                     int i = 0;
                     while (i < n)
                     {
@@ -246,14 +260,39 @@ namespace RevitMCPCommandSet.Services.Dwg
                         }
                         if (lenCur >= MinRunFt)
                         {
-                            runs.Add((vs[i], vs[(k + 1) % n]));
+                            runs.Add((vs[i], vs[(k + 1) % n], lenCur));
                             straightRuns++;
                         }
                         i = k + 1;
                     }
 
+                    // Jamb classification: a short run bracketed by two long
+                    // neighbors is the face of a door opening (jamb linework),
+                    // when both neighbor get perpendicular rather than
+                    // collinear to it. Its midpoint becomes bridging evidence.
+                    int runCount = runs.Count;
+                    if (runCount >= 3)
+                    {
+                        for (int j = 0; j < runCount; j++)
+                        {
+                            var prevR = runs[(j + runCount - 1) % runCount];
+                            var nextR = runs[(j + 1) % runCount];
+                            if (runs[j].len >= JambRatio * Math.Min(prevR.len, nextR.len)) continue;
+                            XYZ dj = runs[j].e - runs[j].s;
+                            XYZ dp = prevR.e - prevR.s;
+                            XYZ dn = nextR.e - nextR.s;
+                            double lj = dj.GetLength(), lp = dp.GetLength(), ln2 = dn.GetLength();
+                            if (lj < 1e-9 || lp < 1e-9 || ln2 < 1e-9) continue;
+                            double angP = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dp) / (lj * lp)))) * 180.0 / Math.PI;
+                            double angN = Math.Acos(Math.Min(1.0, Math.Abs(dj.DotProduct(dn) / (lj * ln2)))) * 180.0 / Math.PI;
+                            if (angP < JambPerpMinDeg || angN < JambPerpMinDeg) continue;
+                            jambCandidates++;
+                            jambMidpoints.Add((runs[j].s + runs[j].e) * 0.5);
+                        }
+                    }
+
                     // Pair runs within the loop as wall faces.
-                    for (int a = 0; a < runs.Count; a++)
+                    for (int a = 0; a < runCount; a++)
                     {
                         var sa = runs[a].s;
                         var ea = runs[a].e;
@@ -262,7 +301,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                         if (la < 1e-9) continue;
                         var ua = da / la;
 
-                        for (int b = a + 1; b < runs.Count; b++)
+                        for (int b = a + 1; b < runCount; b++)
                         {
                             var sb = runs[b].s;
                             var eb = runs[b].e;
@@ -304,8 +343,11 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
                 }
 
-                // ---- independent collinear merge ----
-                var merged = MergeCollinear(centerlinePieces);
+                // ---- independent collinear merge (with opening bridging) ----
+                var bridgeStats = new BridgeStats();
+                var merged = MergeCollinear(centerlinePieces, jambMidpoints, bridgeStats);
+
+                int wallsAfterMerge = merged.Count(p => p.Length >= MinWallLengthFt);
 
                 // ---- level / wall types / build ----
                 var wallTypes = new FilteredElementCollector(doc)
@@ -419,6 +461,15 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["faceLayerHistogram"] = layerHistogram,
                     ["closedLoops"] = loops.Count,
                     ["straightRuns"] = straightRuns,
+                    ["jambCandidates"] = jambCandidates,
+                    ["facePairs"] = pairsMade,
+                    ["rejectedPairsThickness"] = pairsNoThickness,
+                    ["rejectedPairsOverlap"] = pairsNoOverlap,
+                    ["mergedCenterlines"] = merged.Count,
+                    ["wallsPotential"] = wallsAfterMerge,
+                    ["bridgedOpenings"] = bridgeStats.Bridged,
+                    ["unbridgedGaps"] = bridgeStats.Unbridged,
+                    ["straightRuns"] = straightRuns,
                     ["facePairs"] = pairsMade,
                     ["rejectedPairsThickness"] = pairsNoThickness,
                     ["rejectedPairsOverlap"] = pairsNoOverlap,
@@ -449,8 +500,18 @@ namespace RevitMCPCommandSet.Services.Dwg
         // (RailTolFt) and along-track gap (MergeGapFt). Seam-split runs and
         // opening-split pieces rejoin here; duplicates collapse because a
         // redrawn piece with the same v and overlapping u loses to the longer
-        // rail already in the chain.
-        private List<WallPair> MergeCollinear(List<double[]> pieces)
+        // rail already in the chain.Opening bridging: gaps up to
+        // MaxOpeningGapFt (door openings incl. trim) also merge when the
+        // flanking pieces agree on thickness AND a classified jamb midpoint
+        // sits in the cluster frame near a gap edge (BridgeJambSnapFt).
+        private class BridgeStats
+        {
+            public int Silent;
+            public int Bridged;
+            public int Unbridged;
+        }
+
+        private List<WallPair> MergeCollinear(List<double[]> pieces, List<XYZ> jambMidpoints, BridgeStats stats)
         {
             var wallPairs = new List<WallPair>();
             var items = pieces
@@ -530,10 +591,10 @@ namespace RevitMCPCommandSet.Services.Dwg
                 foreach (var f in frags)
                 {
                     if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
-                    else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
-                    else { FlushRail(curRail, railV, railsOut); railV = f[0]; curRail.Add(f); }
-                }
-                FlushRail(curRail, railV, railsOut);
+                else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
+                else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats); railV = f[0]; curRail.Add(f); }
+            }
+            FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats);
 
                 foreach (var r in railsOut)
                 {
@@ -550,7 +611,8 @@ namespace RevitMCPCommandSet.Services.Dwg
             return wallPairs;
         }
 
-        private static void FlushRail(List<double[]> curRail, double railV, List<object[]> railsOut)
+        private static void FlushRailWithBridge(List<double[]> curRail, double railV, List<object[]> railsOut,
+            double am, double cu, double su, List<XYZ> jambMidpoints, BridgeStats stats)
         {
             if (curRail.Count == 0) return;
             curRail.Sort((a, b) => a[1].CompareTo(b[1]));
@@ -558,19 +620,48 @@ namespace RevitMCPCommandSet.Services.Dwg
             for (int k = 1; k < curRail.Count; k++)
             {
                 double f0 = curRail[k][1], f1 = curRail[k][2];
-                if (f0 <= u1 + MergeGapFt)
+                double gap = f0 - u1;
+                if (gap <= MergeGapFt)
                 {
                     if (f1 > u1) u1 = f1;
                     if (curRail[k][3] > thick) thick = curRail[k][3];
+                    stats.Silent++;
+                }
+                else if (gap <= MaxOpeningGapFt &&
+                         Math.Abs(curRail[k][3] - thick) <= BridgeThicknessTolFt &&
+                         HasJambBetween(jambMidpoints, am, railV, u1, f0))
+                {
+                    if (f1 > u1) u1 = f1;
+                    if (curRail[k][3] > thick) thick = curRail[k][3];
+                    stats.Bridged++;
                 }
                 else
                 {
                     railsOut.Add(new object[] { railV, u0, u1, thick });
                     u0 = f0; u1 = f1; thick = curRail[k][3];
+                    stats.Unbridged++;
                 }
             }
             railsOut.Add(new object[] { railV, u0, u1, thick });
             curRail.Clear();
+        }
+
+        // Bridge evidence test: any classified jamb midpoint lying on the rail
+        // (perpendicular offset within RailTolFt of railV, cluster frame) with
+        // an along-track coordinate near either side of the gap (this is the
+        // opening's face — the closed hatch loop guarantees the jamb corners
+        // touch the wall-face endpoints exactly).
+        private static bool HasJambBetween(List<XYZ> jambMidpoints, double am, double railV, double gapStartU, double gapEndU)
+        {
+            double cu = Math.Cos(am), su = Math.Sin(am);
+            foreach (var jp in jambMidpoints)
+            {
+                double jU = jp.X * cu + jp.Y * su;
+                double jV = -jp.X * su + jp.Y * cu;
+                if (Math.Abs(jV - railV) > RailTolFt) continue;
+                if (gapStartU - BridgeJambSnapFt <= jU && jU <= gapEndU + BridgeJambSnapFt) return true;
+            }
+            return false;
         }
 
         private static XYZ ProjectOnLine(XYZ p, XYZ s, XYZ dirUnit)
