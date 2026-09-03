@@ -220,6 +220,8 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var jambMidpoints = new List<XYZ>();         // opening-face run midpoints (bridging evidence)
                 int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;
                 int jambCandidates = 0;
+                var rejects = new List<Dictionary<string, object>>();
+                const int RejectLogCap = 600;
 
                 foreach (var vs in loops)
                 {
@@ -319,6 +321,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
 
                     // Pair runs within the loop as wall faces.
+                    var runMatched = new bool[runCount];
                     for (int a = 0; a < runCount; a++)
                     {
                         var sa = runs[a].s;
@@ -345,7 +348,19 @@ namespace RevitMCPCommandSet.Services.Dwg
                             var vv = mb - sa;
                             var perp = vv - ua * vv.DotProduct(ua);
                             double thick = perp.GetLength();
-                            if (thick < minT || thick > maxT) { pairsNoThickness++; continue; }
+                            if (thick < minT || thick > maxT)
+                            {
+                                pairsNoThickness++;
+                                if (rejects.Count < RejectLogCap)
+                                    rejects.Add(new Dictionary<string, object>
+                                    {
+                                        ["stage"] = "pairThickness",
+                                        ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                        ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                        ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                    });
+                                continue;
+                            }
 
                             double tb0 = (sb - sa).DotProduct(ua) / la;
                             double tb1 = (eb - sa).DotProduct(ua) / la;
@@ -354,7 +369,20 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (hi <= lo) continue;
                             double overlapLen = (hi - lo) * la;
                             double minLen = Math.Min(la, lb);
-                            if (overlapLen / minLen < MinOverlapFrac) { pairsNoOverlap++; continue; }
+                            if (overlapLen / minLen < MinOverlapFrac)
+                            {
+                                pairsNoOverlap++;
+                                if (rejects.Count < RejectLogCap)
+                                    rejects.Add(new Dictionary<string, object>
+                                    {
+                                        ["stage"] = "pairOverlap",
+                                        ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                        ["overlapFrac"] = R2(overlapLen / minLen),
+                                        ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                        ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                    });
+                                continue;
+                            }
 
                             // Centerline: mean of point on run a and its projection on run b.
                             var pStart = sa + da * lo;
@@ -366,13 +394,35 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                             centerlinePieces.Add(new[] { c0.X, c0.Y, c1.X, c1.Y, thick, dev2 });
                             pairsMade++;
+                            runMatched[a] = true;
+                            runMatched[b] = true;
                         }
+                    }
+
+                    // Runs that found no partner at all are pure linework /
+                    // opening faces with no second face — record them so the
+                    // cull trail shows which hatch geometry died here.
+                    for (int a = 0; a < runCount; a++)
+                    {
+                        if (runMatched[a]) continue;
+                        var ra = runs[a];
+                        var ua2 = (ra.e - ra.s) / ra.len;
+                        var mid = (ra.s + ra.e) * 0.5;
+                        var nrm = new XYZ(-ua2.Y, ua2.X, 0); // inward probe
+                        if (rejects.Count < RejectLogCap)
+                            rejects.Add(new Dictionary<string, object>
+                            {
+                                ["stage"] = "unpairedRun",
+                                ["len"] = R2(ra.len),
+                                ["mid"] = P2(mid),
+                                ["probe"] = P2(mid + nrm * Math.Min(maxT, 1.0))
+                            });
                     }
                 }
 
                 // ---- independent collinear merge (with opening bridging) ----
                 var bridgeStats = new BridgeStats();
-                var merged = MergeCollinear(centerlinePieces, jambMidpoints, bridgeStats);
+                var merged = MergeCollinear(centerlinePieces, jambMidpoints, bridgeStats, rejects);
 
                 int wallsAfterMerge = merged.Count(p => p.Length >= MinWallLengthFt);
 
@@ -436,13 +486,31 @@ namespace RevitMCPCommandSet.Services.Dwg
                     {
                         if (created >= MaxWalls) break;
 
-                        if (pair.Length < MinWallLengthFt) { rejectedJamb++; continue; }
+                        if (pair.Length < MinWallLengthFt)
+                        {
+                            rejectedJamb++;
+                            if (rejects.Count < RejectLogCap)
+                                rejects.Add(new Dictionary<string, object>
+                                {
+                                    ["stage"] = "shortCenterline",
+                                    ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                    ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                                });
+                            continue;
+                        }
 
                         if (ExcludeDoorArcs && jambPoints != null &&
                             pair.Length < MinWallLengthFt * 2.0 &&
                             NearJamb(pair.CenterStart, jambPoints) && NearJamb(pair.CenterEnd, jambPoints))
                         {
                             doorArcRejected++;
+                            if (rejects.Count < RejectLogCap)
+                                rejects.Add(new Dictionary<string, object>
+                                {
+                                    ["stage"] = "doorArc",
+                                    ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                    ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                                });
                             continue;
                         }
 
@@ -503,12 +571,13 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["mergedCenterlines"] = merged.Count,
                     ["wallsCreated"] = created,
                     ["rejectedJamb"] = rejectedJamb,
-                    ["doorArcRejected"] = doorArcRejected,
-                    ["buildFailed"] = buildFailed,
-                    ["minWallLengthFt"] = MinWallLengthFt,
-                    ["typeSummary"] = typeSummary,
-                    ["createdIds"] = createdIds,
-                    ["suppressedMessages"] = preprocessor.Log
+                ["doorArcRejected"] = doorArcRejected,
+                ["buildFailed"] = buildFailed,
+                ["minWallLengthFt"] = MinWallLengthFt,
+                ["typeSummary"] = typeSummary,
+                ["createdIds"] = createdIds,
+                ["rejects"] = rejects,
+                ["suppressedMessages"] = preprocessor.Log
                 };
             }
             catch (Exception ex)
@@ -538,7 +607,7 @@ namespace RevitMCPCommandSet.Services.Dwg
             public int Unbridged;
         }
 
-        private List<WallPair> MergeCollinear(List<double[]> pieces, List<XYZ> jambMidpoints, BridgeStats stats)
+        private List<WallPair> MergeCollinear(List<double[]> pieces, List<XYZ> jambMidpoints, BridgeStats stats, List<Dictionary<string, object>> rejects)
         {
             var wallPairs = new List<WallPair>();
             var items = pieces
@@ -619,9 +688,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                 {
                     if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
                 else if (Math.Abs(f[0] - railV) <= RailTolFt) { curRail.Add(f); }
-                else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats); railV = f[0]; curRail.Add(f); }
+                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, rejects); railV = f[0]; curRail.Add(f); }
             }
-            FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats);
+                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, rejects);
 
                 foreach (var r in railsOut)
                 {
@@ -639,7 +708,8 @@ namespace RevitMCPCommandSet.Services.Dwg
         }
 
         private static void FlushRailWithBridge(List<double[]> curRail, double railV, List<object[]> railsOut,
-            double am, double cu, double su, List<XYZ> jambMidpoints, BridgeStats stats)
+            double am, double cu, double su, List<XYZ> jambMidpoints, BridgeStats stats,
+            List<Dictionary<string, object>> rejects)
         {
             if (curRail.Count == 0) return;
             curRail.Sort((a, b) => a[1].CompareTo(b[1]));
@@ -665,12 +735,31 @@ namespace RevitMCPCommandSet.Services.Dwg
                 else
                 {
                     railsOut.Add(new object[] { railV, u0, u1, thick });
-                    u0 = f0; u1 = f1; thick = curRail[k][3];
                     stats.Unbridged++;
+                    if (rejects != null && rejects.Count < 600)
+                        rejects.Add(new Dictionary<string, object>
+                        {
+                            ["stage"] = "unbridgedGap",
+                            ["gapLen"] = R2(gap),
+                            ["thickA"] = R2(thick), ["thickB"] = R2(curRail[k][3]),
+                            ["gapStart"] = P2(new XYZ(u1 * cu - railV * su, u1 * su + railV * cu, 0)),
+                            ["gapEnd"] = P2(new XYZ(f0 * cu - railV * su, f0 * su + railV * cu, 0))
+                        });
+                    u0 = f0; u1 = f1; thick = curRail[k][3];
                 }
             }
             railsOut.Add(new object[] { railV, u0, u1, thick });
             curRail.Clear();
+        }
+
+        // Reject diagnostics: first 600 culled candidates are logged with a
+        // stage tag and geometry (ft, rounded) so runs can be diffed offline.
+
+        private static double R2(double v) { return Math.Round(v, 2); }
+
+        private static double[] P2(XYZ p)
+        {
+            return new[] { Math.Round(p.X, 2), Math.Round(p.Y, 2) };
         }
 
         // Bridge evidence test: any classified jamb midpoint lying on the rail
