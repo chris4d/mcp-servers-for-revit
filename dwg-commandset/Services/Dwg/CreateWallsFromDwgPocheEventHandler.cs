@@ -69,6 +69,7 @@ namespace RevitMCPCommandSet.Services.Dwg
         private const double JambSiblingParallelTolDeg = 10.0; // sibling runs face each other
         private const double JambSiblingLenTol = 0.25;  // near-equal lengths (both span the band)
         private const double BridgeJambSnapFt = 0.6;  // jamb midpoint may sit near a gap edge
+        private const double PocheProximityFt = 0.15; // midline may sit this far outside a hatch patch (multi-wythe seam)
 
         public object Result { get; private set; }
 
@@ -218,10 +219,28 @@ namespace RevitMCPCommandSet.Services.Dwg
                 double maxT = MaxWallThicknessFt;
                 var centerlinePieces = new List<double[]>(); // sX,sY,eX,eY,thick
                 var jambMidpoints = new List<XYZ>();         // opening-face run midpoints (bridging evidence)
-                int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;
-                int jambCandidates = 0;
+                int straightRuns = 0, pairsNoThickness = 0, pairsNoOverlap = 0, pairsMade = 0;                int jambCandidates = 0;
+                int pairsOutsidePoche = 0, pairsInsidePoche = 0;
+                // Hatch-fill polygons for the poche containment gate: a
+                // candidate midline must lie inside SOME hatch face. Real
+                // walls are poché, so their centerline runs through hatch;
+                // lines on opposite sides of a room put the centerline in
+                // un-hatched space - a strong non-pair signal.
+                var pochePolys = loops;
                 var rejects = new List<Dictionary<string, object>>();
                 const int RejectLogCap = 600;
+                const int PerStageCap = 150;
+                int rejectLogIndex = 0;
+                var stageCounts = new Dictionary<string, int>();
+                void LogReject(string stage, Dictionary<string, object> fields)
+                {
+                    if (!stageCounts.ContainsKey(stage)) stageCounts[stage] = 0;
+                    stageCounts[stage]++;
+                    if (stageCounts[stage] > PerStageCap || rejectLogIndex >= RejectLogCap) return;
+                    fields["stage"] = stage;
+                    rejects.Add(fields);
+                    rejectLogIndex++;
+                }
 
                 foreach (var vs in loops)
                 {
@@ -351,14 +370,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (thick < minT || thick > maxT)
                             {
                                 pairsNoThickness++;
-                                if (rejects.Count < RejectLogCap)
-                                    rejects.Add(new Dictionary<string, object>
-                                    {
-                                        ["stage"] = "pairThickness",
-                                        ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
-                                        ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
-                                        ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
-                                    });
+                                LogReject("pairThickness", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
                                 continue;
                             }
 
@@ -372,15 +389,13 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (overlapLen / minLen < MinOverlapFrac)
                             {
                                 pairsNoOverlap++;
-                                if (rejects.Count < RejectLogCap)
-                                    rejects.Add(new Dictionary<string, object>
-                                    {
-                                        ["stage"] = "pairOverlap",
-                                        ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
-                                        ["overlapFrac"] = R2(overlapLen / minLen),
-                                        ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
-                                        ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
-                                    });
+                                LogReject("pairOverlap", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["overlapFrac"] = R2(overlapLen / minLen),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
                                 continue;
                             }
 
@@ -392,6 +407,27 @@ namespace RevitMCPCommandSet.Services.Dwg
                             var projE = sb + ub * (pEnd - sb).DotProduct(ub);
                             var c1 = (pEnd + projE) * 0.5;
 
+                            // Poche containment gate: the wall's centerline
+                            // must run through hatch. Test both the exact
+                            // midpoint and, for multi-band assemblies, allow
+                            // the midline to sit just outside a hatch edge
+                            // (adjacent hatch patches leave a thin unfilled
+                            // seam between the wythes).
+                            var mid = (c0 + c1) * 0.5;
+                            if (!InsideAnyPoche(mid, pochePolys, PocheProximityFt))
+                            {
+                                pairsOutsidePoche++;
+                                LogReject("outsidePoche", new Dictionary<string, object>
+                                {
+                                    ["lenA"] = R2(la), ["lenB"] = R2(lb), ["thick"] = R2(thick),
+                                    ["mid"] = P2(mid),
+                                    ["aStart"] = P2(sa), ["aEnd"] = P2(ea),
+                                    ["bStart"] = P2(sb), ["bEnd"] = P2(eb)
+                                });
+                                continue;
+                            }
+                            pairsInsidePoche++;
+
                             centerlinePieces.Add(new[] { c0.X, c0.Y, c1.X, c1.Y, thick, dev2 });
                             pairsMade++;
                             runMatched[a] = true;
@@ -400,7 +436,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
 
                     // Runs that found no partner at all are pure linework /
-                    // opening faces with no second face — record them so the
+                    // opening faces with no second face - record them so the
                     // cull trail shows which hatch geometry died here.
                     for (int a = 0; a < runCount; a++)
                     {
@@ -409,14 +445,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                         var ua2 = (ra.e - ra.s) / ra.len;
                         var mid = (ra.s + ra.e) * 0.5;
                         var nrm = new XYZ(-ua2.Y, ua2.X, 0); // inward probe
-                        if (rejects.Count < RejectLogCap)
-                            rejects.Add(new Dictionary<string, object>
-                            {
-                                ["stage"] = "unpairedRun",
-                                ["len"] = R2(ra.len),
-                                ["mid"] = P2(mid),
-                                ["probe"] = P2(mid + nrm * Math.Min(maxT, 1.0))
-                            });
+                        LogReject("unpairedRun", new Dictionary<string, object>
+                        {
+                            ["len"] = R2(ra.len),
+                            ["mid"] = P2(mid),
+                            ["probe"] = P2(mid + nrm * Math.Min(maxT, 1.0))
+                        });
                     }
                 }
 
@@ -489,13 +523,11 @@ namespace RevitMCPCommandSet.Services.Dwg
                         if (pair.Length < MinWallLengthFt)
                         {
                             rejectedJamb++;
-                            if (rejects.Count < RejectLogCap)
-                                rejects.Add(new Dictionary<string, object>
-                                {
-                                    ["stage"] = "shortCenterline",
-                                    ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
-                                    ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
-                                });
+                            LogReject("shortCenterline", new Dictionary<string, object>
+                            {
+                                ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                            });
                             continue;
                         }
 
@@ -504,13 +536,11 @@ namespace RevitMCPCommandSet.Services.Dwg
                             NearJamb(pair.CenterStart, jambPoints) && NearJamb(pair.CenterEnd, jambPoints))
                         {
                             doorArcRejected++;
-                            if (rejects.Count < RejectLogCap)
-                                rejects.Add(new Dictionary<string, object>
-                                {
-                                    ["stage"] = "doorArc",
-                                    ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
-                                    ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
-                                });
+                            LogReject("doorArc", new Dictionary<string, object>
+                            {
+                                ["len"] = R2(pair.Length), ["thick"] = R2(pair.Thickness),
+                                ["start"] = P2(pair.CenterStart), ["end"] = P2(pair.CenterEnd)
+                            });
                             continue;
                         }
 
@@ -568,6 +598,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["facePairs"] = pairsMade,
                     ["rejectedPairsThickness"] = pairsNoThickness,
                     ["rejectedPairsOverlap"] = pairsNoOverlap,
+                    ["pairsInsidePoche"] = pairsInsidePoche,
+                    ["pairsOutsidePoche"] = pairsOutsidePoche,
+                    ["rejectStageCounts"] = stageCounts,
                     ["mergedCenterlines"] = merged.Count,
                     ["wallsCreated"] = created,
                     ["rejectedJamb"] = rejectedJamb,
@@ -754,6 +787,52 @@ namespace RevitMCPCommandSet.Services.Dwg
 
         // Reject diagnostics: first 600 culled candidates are logged with a
         // stage tag and geometry (ft, rounded) so runs can be diffed offline.
+
+        // Poche containment: true when p lies inside one of the hatch-fill
+        // polygons, or within toleranceFt of one of their edges. Near-edge
+        // acceptance lets multi-band assemblies (adjacent hatch patches with
+        // a thin unfilled seam between wythes) keep their midline.
+        private static bool InsideAnyPoche(XYZ p, List<List<XYZ>> polys, double toleranceFt)
+        {
+            foreach (var poly in polys)
+            {
+                if (poly == null || poly.Count < 3) continue;
+                if (PointNearOrInsidePoly(poly, p, toleranceFt)) return true;
+            }
+            return false;
+        }
+
+        private static bool PointNearOrInsidePoly(List<XYZ> poly, XYZ p, double toleranceFt)
+        {
+            int n = poly.Count;
+            // near-edge test
+            if (toleranceFt > 0)
+            {
+                for (int i = 0, j = n - 1; i < n; j = i++)
+                {
+                    var a = poly[i]; var b = poly[j];
+                    var ab = b - a;
+                    double L = ab.GetLength();
+                    if (L < 1e-9) continue;
+                    double t = (p - a).DotProduct(ab) / (L * L);
+                    if (t < 0.0 || t > 1.0) continue;
+                    var q = a + ab * t;
+                    if (p.DistanceTo(q) <= toleranceFt) return true;
+                }
+            }
+            // ray-cast parity
+            bool inside = false;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                var a = poly[i]; var b = poly[j];
+                if ((a.Y > p.Y) != (b.Y > p.Y))
+                {
+                    double xInter = (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X;
+                    if (p.X < xInter) inside = !inside;
+                }
+            }
+            return inside;
+        }
 
         private static double R2(double v) { return Math.Round(v, 2); }
 
