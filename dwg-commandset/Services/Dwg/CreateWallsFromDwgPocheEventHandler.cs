@@ -300,7 +300,11 @@ namespace RevitMCPCommandSet.Services.Dwg
                         {
                             var prevR = runs[(j + runCount - 1) % runCount];
                             var nextR = runs[(j + 1) % runCount];
-                            if (runs[j].len >= JambRatio * Math.Min(prevR.len, nextR.len)) continue;
+                            // JambRatio gate (short-vs-neighbors) is disabled:
+                            // the sibling test below is the real jamb proof,
+                            // and the ratio heuristic was rejecting real
+                            // opening faces adjacent to junctions.
+                            //if (runs[j].len >= JambRatio * Math.Min(prevR.len, nextR.len)) continue;
                             XYZ dj = runs[j].e - runs[j].s;
                             XYZ dp = prevR.e - prevR.s;
                             XYZ dn = nextR.e - nextR.s;

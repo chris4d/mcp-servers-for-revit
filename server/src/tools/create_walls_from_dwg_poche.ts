@@ -25,9 +25,9 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
           maxWallThicknessFt: z
             .number()
             .positive()
-            .default(3.0)
+            .default(5.0)
             .optional()
-            .describe("Maximum pairing distance in feet (default 3.0 = 36in). Minimum is fixed at 2in."),
+            .describe("Maximum pairing distance in feet (default 5.0 with the poche containment gate; lines across open rooms are culled by hatch-containment, not thickness). Minimum is fixed at 2in."),
           minWallLengthFt: z
             .number()
             .positive()
@@ -64,7 +64,7 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
         dwgNameOrId: d.dwgNameOrId,
         pocheLayer: d.pocheLayer ?? "",
         heightFt: d.heightFt ?? 10,
-        maxWallThicknessFt: d.maxWallThicknessFt ?? 3.0,
+        maxWallThicknessFt: d.maxWallThicknessFt ?? 5.0,
         minWallLengthFt: d.minWallLengthFt ?? 3.5,
         excludeDoorArcs: d.excludeDoorArcs ?? true,
         maxWalls: d.maxWalls ?? 200,

@@ -36,6 +36,8 @@ namespace RevitMCPCommandSet.Commands.Dwg
                     _handler.HeightFt = Math.Max(0.5, h);
                 if (parameters?["maxWallThicknessFt"] != null && double.TryParse(parameters["maxWallThicknessFt"].ToString(), out double mwt))
                     _handler.MaxWallThicknessFt = Math.Max(0.2, mwt);
+                else
+                    _handler.MaxWallThicknessFt = 5.0;
                 if (parameters?["minWallLengthFt"] != null && double.TryParse(parameters["minWallLengthFt"].ToString(), out double mwl))
                     _handler.MinWallLengthFt = Math.Max(0.5, mwl);
                 if (parameters?["maxWalls"] != null && int.TryParse(parameters["maxWalls"].ToString(), out int mw))
