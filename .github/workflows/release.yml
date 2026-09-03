@@ -134,6 +134,6 @@ jobs:
           append_body: true
           body: |
             ## Windows Installer
-            **`mcp-servers-for-revit-setup.exe`** is a standard Windows installer (Revit 2024-2026): it installs the Revit plugin, lets you choose command sets, and configures AI clients (Claude Desktop, Cursor, opencode). The per-Revit-version ZIPs below remain available for manual deployment.
+            **`mcp-servers-for-revit-setup.exe`** is a standard Windows installer (Revit 2024-2026): it installs the Revit plugin, lets you choose command sets, and configures AI clients (Claude Desktop, Cursor, opencode). The MCP server is bundled with the installer (no npm `npx` dependency; Node.js 20+ still required). The per-Revit-version ZIPs below remain available for manual deployment.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
