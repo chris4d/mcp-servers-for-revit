@@ -16,10 +16,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Node 22: server engines require >=20 (upstream constraint, driven by
+      # better-sqlite3 v12); upstream's own workflow still pins 18 and is stale.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 22
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
