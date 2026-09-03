@@ -166,7 +166,7 @@ $issLines += '[Setup]'
 $issLines += 'AppName=MCP Servers for Revit'
 $issLines += "AppVersion=$pluginVersion"
 $issLines += 'AppPublisher=MCP Servers for Revit'
-$issLines += 'AppPublisherURL=https://github.com/mcp-servers-for-revit/mcp-servers-for-revit'
+$issLines += 'AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit'
 $issLines += 'DefaultDirName={autopf}\MCP Servers for Revit'
 $issLines += 'DefaultGroupName=MCP Servers for Revit'
 $issLines += "OutputDir=$OutputDir"
