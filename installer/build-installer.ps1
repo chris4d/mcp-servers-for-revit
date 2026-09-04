@@ -103,8 +103,8 @@ if (-not $SkipPluginBuild) {
     $builtVersions = @()
     if (Test-Path $StagedDir) {
         Get-ChildItem $StagedDir -Directory | ForEach-Object {
-            $y = [int]$_.Name
-            if ($YearToConfig.ContainsKey($y)) { $builtVersions += $y }
+            $y = 0
+            if ([int]::TryParse($_.Name, [ref]$y) -and $YearToConfig.ContainsKey($y)) { $builtVersions += $y }
         }
     }
     if ($builtVersions.Count -eq 0) { throw "No staged versions found." }

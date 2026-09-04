@@ -2,9 +2,9 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.0.0
+AppVersion=1.1.2
 AppPublisher=MCP Servers for Revit
-AppPublisherURL=https://github.com/mcp-servers-for-revit/mcp-servers-for-revit
+AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
 DefaultGroupName=MCP Servers for Revit
 OutputDir=C:\dev\mcp-servers-for-revit\installer\output
@@ -19,11 +19,10 @@ PrivilegesRequiredOverridesAllowed=dialog
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "staged\2020\*"; DestDir: "{app}\RevitPlugins\2020"; Flags: recursesubdirs ignoreversion
-Source: "staged\2021\*"; DestDir: "{app}\RevitPlugins\2021"; Flags: recursesubdirs ignoreversion
-Source: "staged\2022\*"; DestDir: "{app}\RevitPlugins\2022"; Flags: recursesubdirs ignoreversion
-Source: "staged\2023\*"; DestDir: "{app}\RevitPlugins\2023"; Flags: recursesubdirs ignoreversion
 Source: "staged\2024\*"; DestDir: "{app}\RevitPlugins\2024"; Flags: recursesubdirs ignoreversion
+Source: "staged\2025\*"; DestDir: "{app}\RevitPlugins\2025"; Flags: recursesubdirs ignoreversion
+Source: "staged\2026\*"; DestDir: "{app}\RevitPlugins\2026"; Flags: recursesubdirs ignoreversion
+Source: "staged\Server\*"; DestDir: "{app}\Server"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{group}\Uninstall MCP Servers for Revit"; Filename: "{uninstallexe}"
@@ -37,7 +36,7 @@ const
 var
   Page: TWizardPage;
   SetPage: TWizardPage;
-  ClaudeCB, CursorCB, OpencodeCB: TNewCheckBox;
+  ClaudeCB, CursorCB, OpencodeCB, AnythingLLMCB: TNewCheckBox;
 
 var SetCBs: array[0..2] of TNewCheckBox;
 
@@ -163,6 +162,58 @@ begin
   end;
 end;
 
+// Path of the bundled server for this install, JSON-escaped (backslashes doubled).
+function ServerPathJson(): String;
+begin
+  Result := ExpandConstant('{app}\Server\build\index.js');
+  StringChangeEx(Result, '\', '\\', True);
+end;
+
+procedure GetNodeEntry(var Entry: String);
+var SP: String;
+begin
+  SP := ServerPathJson();
+  Entry := '"mcp-server-for-revit": {' + #13#10
+         + '            "command": "node",' + #13#10
+         + '            "args": ["' + SP + '"]' + #13#10
+         + '        }';
+end;
+
+procedure GetOpenCodeEntry(var Entry: String);
+var SP: String;
+begin
+  SP := ServerPathJson();
+  Entry := '"mcp-server-for-revit": {' + #13#10
+         + '            "type": "local",' + #13#10
+         + '            "command": ["node", "' + SP + '"],' + #13#10
+         + '            "enabled": true' + #13#10
+         + '        }';
+end;
+
+procedure ReplaceNpxServerEntry(var C: String; OpenCodeStyle: Boolean);
+var I, S, E, Depth: Integer; Block, Fresh: String;
+begin
+  S := Pos(ServerKey, C);
+  if S = 0 then Exit;
+  E := 0; Depth := 0;
+  for I := S to Length(C) do begin
+    if C[I] = '{' then begin
+      if Depth = 0 then S := I;
+      Depth := Depth + 1;
+    end else if C[I] = '}' then begin
+      Depth := Depth - 1;
+      if Depth = 0 then begin E := I; Break; end;
+    end;
+  end;
+  if E = 0 then Exit;
+  Block := Copy(C, S, E - S + 1);
+  if Pos('npx', Block) = 0 then Exit;
+  if OpenCodeStyle then GetOpenCodeEntry(Fresh) else GetNodeEntry(Fresh);
+  Delete(C, S, E - S + 1);
+  Insert(Fresh, C, S);
+  Log('Replaced npx server entry with bundled server');
+end;
+
 procedure ConfigureClaudeDesktop;
 var P, C: String; SL: TStringList;
 begin
@@ -174,8 +225,8 @@ begin
       SL.Add('{');
       SL.Add('    "mcpServers": {');
       SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "command": "cmd",');
-      SL.Add('            "args": ["/c", "npx", "-y", "mcp-server-for-revit"]');
+      SL.Add('            "command": "node",');
+      SL.Add('            "args": ["' + ServerPathJson() + '"]');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -186,9 +237,14 @@ begin
     SL := TStringList.Create;
     try
       SL.LoadFromFile(P); C := SL.Text;
-      if Pos(ServerKey, C) > 0 then begin Log('Claude Desktop already configured'); Exit; end;
+      if Pos(ServerKey, C) > 0 then begin
+        ReplaceNpxServerEntry(C, False);
+        SL.Text := C;
+        SL.SaveToFile(P);
+      Exit;
+      end;
       StringChangeEx(C, '"mcpServers": {',
-        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "npx", "-y", "mcp-server-for-revit"]' + #13#10 + '        },', True);
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -228,8 +284,8 @@ begin
       SL.Add('{');
       SL.Add('    "mcpServers": {');
       SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "command": "npx",');
-      SL.Add('            "args": ["-y", "mcp-server-for-revit"]');
+      SL.Add('            "command": "node"');
+      SL.Add('            "args": ["' + ServerPathJson() + '"]');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -240,9 +296,14 @@ begin
     SL := TStringList.Create;
     try
       SL.LoadFromFile(P); C := SL.Text;
-      if Pos(ServerKey, C) > 0 then begin Log('Cursor already configured'); Exit; end;
+      if Pos(ServerKey, C) > 0 then begin
+        ReplaceNpxServerEntry(C, False);
+        SL.Text := C;
+        SL.SaveToFile(P);
+      Exit;
+      end;
       StringChangeEx(C, '"mcpServers": {',
-        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "npx",' + #13#10 + '            "args": ["-y", "mcp-server-for-revit"]' + #13#10 + '        },', True);
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -255,6 +316,65 @@ procedure RemoveFromCursor;
 var P, C: String; SL: TStringList; S, E: Integer;
 begin
   P := GetUserProfilePath + '\\.cursor\\mcp.json';
+  if not FileExists(P) then Exit;
+  SL := TStringList.Create;
+  try
+    SL.LoadFromFile(P); C := SL.Text;
+    S := Pos('"mcp-server-for-revit"', C);
+    if S = 0 then Exit;
+    E := Pos('}', Copy(C, S, Length(C)));
+    if E = 0 then Exit;
+    E := S + E - 1;
+    if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
+    Delete(C, S, E - S + 1);
+    CleanTrailingCommas(C);
+    SL.Text := C; SL.SaveToFile(P);
+  finally SL.Free; end;
+end;
+
+procedure ConfigureAnythingLLM;
+var P, C: String; SL: TStringList;
+begin
+  P := GetAppDataDir + '\\anythingllm-desktop\\storage\\plugins\\anythingllm_mcp_servers.json';
+  if not FileExists(P) then begin
+    ForceDirectories(ExtractFilePath(P));
+    SL := TStringList.Create;
+    try
+      SL.Add('{');
+      SL.Add('    "mcpServers": {');
+      SL.Add('        "mcp-server-for-revit": {');
+      SL.Add('            "command": "node",');
+      SL.Add('            "args": ["' + ServerPathJson() + '"]');
+      SL.Add('        }');
+      SL.Add('    }');
+      SL.Add('}');
+      SL.SaveToFile(P);
+    finally SL.Free; end;
+    Log('Created AnythingLLM config');
+  end else begin
+    SL := TStringList.Create;
+    try
+      SL.LoadFromFile(P); C := SL.Text;
+      if Pos(ServerKey, C) > 0 then begin
+        ReplaceNpxServerEntry(C, False);
+        SL.Text := C;
+        SL.SaveToFile(P);
+      Exit;
+      end;
+      StringChangeEx(C, '"mcpServers": {',
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
+      CleanTrailingCommas(C);
+      SL.Text := C;
+      SL.SaveToFile(P);
+    finally SL.Free; end;
+    Log('Updated AnythingLLM config');
+  end;
+end;
+
+procedure RemoveFromAnythingLLM;
+var P, C: String; SL: TStringList; S, E: Integer;
+begin
+  P := GetAppDataDir + '\\anythingllm-desktop\\storage\\plugins\\anythingllm_mcp_servers.json';
   if not FileExists(P) then Exit;
   SL := TStringList.Create;
   try
@@ -284,7 +404,7 @@ begin
       SL.Add('    "mcp": {');
       SL.Add('        "mcp-server-for-revit": {');
       SL.Add('            "type": "local",');
-      SL.Add('            "command": ["npx", "-y", "mcp-server-for-revit"],');
+      SL.Add('            "command": ["node", "' + ServerPathJson() + '"],');
       SL.Add('            "enabled": true');
       SL.Add('        }');
       SL.Add('    }');
@@ -296,9 +416,14 @@ begin
     SL := TStringList.Create;
     try
       SL.LoadFromFile(P); C := SL.Text;
-      if Pos(ServerKey, C) > 0 then begin Log('opencode already configured'); Exit; end;
+      if Pos(ServerKey, C) > 0 then begin
+        ReplaceNpxServerEntry(C, True);
+        SL.Text := C;
+        SL.SaveToFile(P);
+      Exit;
+      end;
       StringChangeEx(C, '"mcp": {',
-        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["npx", "-y", "mcp-server-for-revit"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
+        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["node", "' + ServerPathJson() + '"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -340,9 +465,9 @@ begin
   SetLabel.Caption := 'All command sets are selected by default. Uncheck any you do not want:';
   SetLabel.Font.Style := [fsBold];
 
-  Names[0] := 'RevitMCPCommandSet';
-  Names[1] := 'DwgCommandSet';
-  Names[2] := 'OffAxisCommandSet';
+  Names[0] := 'DwgCommandSet';
+  Names[1] := 'OffAxisCommandSet';
+  Names[2] := 'RevitMCPCommandSet';
 
   for I := 0 to High(SetCBs) do begin
     SetCBs[I] := TNewCheckBox.Create(WizardForm);
@@ -381,6 +506,12 @@ begin
   OpencodeCB.SetBounds(ScaleX(20), ScaleY(90), ScaleX(400), ScaleY(20));
   OpencodeCB.Caption := 'opencode (' + GetUserProfilePath + '\\.config\\opencode\\)';
   OpencodeCB.Checked := DirExists(GetUserProfilePath + '\\.config\\opencode');
+
+  AnythingLLMCB := TNewCheckBox.Create(WizardForm);
+  AnythingLLMCB.Parent := Page.Surface;
+  AnythingLLMCB.SetBounds(ScaleX(20), ScaleY(115), ScaleX(400), ScaleY(20));
+  AnythingLLMCB.Caption := 'AnythingLLM (' + GetAppDataDir + '\\anythingllm-desktop\\)';
+  AnythingLLMCB.Checked := DirExists(GetAppDataDir + '\\anythingllm-desktop');
 end;
 
 procedure InitializeWizard;
@@ -396,7 +527,7 @@ begin
   if Page = wpReady then begin
     if not IsNodeInstalled then begin
       M := 'Node.js is required but not found.' + #13#10 + #13#10
-        + 'Install Node.js 18+ from https://nodejs.org/' + #13#10 + #13#10
+        + 'Install Node.js 20+ from https://nodejs.org/' + #13#10 + #13#10
         + 'The plugin will install but AI features won''t work.' + #13#10 + #13#10
         + 'Continue anyway?';
       if MsgBox(M, mbInformation, MB_YESNO) = IDNO then Result := False;
@@ -409,23 +540,23 @@ begin
   if FileExists(GetAppDataDir + '\\Claude\\claude_desktop_config.json') or DirExists(GetAppDataDir + '\\Claude') then ConfigureClaudeDesktop;
   if DirExists(GetUserProfilePath + '\\.cursor') then ConfigureCursor;
   if DirExists(GetUserProfilePath + '\\.config\\opencode') then ConfigureOpencode;
+  if DirExists(GetAppDataDir + '\\anythingllm-desktop') then ConfigureAnythingLLM;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var AnyChecked: Boolean;
 begin
   if CurStep = ssPostInstall then begin
-    if IsRevitInstalled('2020') then CopyToRevitAddins('2020');
-    if IsRevitInstalled('2021') then CopyToRevitAddins('2021');
-    if IsRevitInstalled('2022') then CopyToRevitAddins('2022');
-    if IsRevitInstalled('2023') then CopyToRevitAddins('2023');
     if IsRevitInstalled('2024') then CopyToRevitAddins('2024');
-    AnyChecked := ClaudeCB.Checked or CursorCB.Checked or OpencodeCB.Checked;
+    if IsRevitInstalled('2025') then CopyToRevitAddins('2025');
+    if IsRevitInstalled('2026') then CopyToRevitAddins('2026');
+    AnyChecked := ClaudeCB.Checked or CursorCB.Checked or OpencodeCB.Checked or AnythingLLMCB.Checked;
     if not AnyChecked then ConfigureDetectedClients
     else begin
       if ClaudeCB.Checked then ConfigureClaudeDesktop;
       if CursorCB.Checked then ConfigureCursor;
       if OpencodeCB.Checked then ConfigureOpencode;
+      if AnythingLLMCB.Checked then ConfigureAnythingLLM;
     end;
     MsgBox('Installation complete.' #13#10 #13#10 'Commands are disabled by default for your control. To expose model commands to AI clients:' #13#10 '1. In Revit, open the plugin Settings page' #13#10 '2. Enable the commands you want, then click Save' #13#10 '3. Click the Revit MCP Switch to start the server', mbInformation, MB_OK);
   end;
@@ -439,5 +570,6 @@ begin
     RemoveFromClaudeDesktop;
     RemoveFromCursor;
     RemoveFromOpencode;
+    RemoveFromAnythingLLM;
   end;
 end;
