@@ -70,6 +70,8 @@ namespace RevitMCPCommandSet.Services.Dwg
         private const double JambSiblingLenTol = 0.25;  // near-equal lengths (both span the band)
         private const double BridgeJambSnapFt = 0.6;  // jamb midpoint may sit near a gap edge
         private const double PocheProximityFt = 0.15; // midline may sit this far outside a hatch patch (multi-wythe seam)
+        private const double PocketSlotDepthFt = 0.5; // pocket strips are thinner than this
+        private const double SliverRailTolFt = 0.1;   // sliver rail may sit this far outside the host band edge
 
         public object Result { get; private set; }
 
@@ -462,6 +464,31 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var bridgeStats = new BridgeStats();
                 var merged = MergeCollinear(centerlinePieces, jambMidpoints, bridgeStats, rejects);
 
+                // ---- pocket-door slot filter (nested sliver pairs) ----
+                // Pocket doors are drawn as a slot notched into a wall band:
+                // thin hatch strips (~0.25-0.45ft) above/below the slot pair
+                // into spurious short walls. A thin pair whose centerline rail
+                // sits inside the band of a longer, thicker pair and whose
+                // along-extent is contained in that pair's span is a sliver,
+                // not a wall.
+                int sliversCulled = 0;
+                var keptPairs = new List<WallPair>();
+                foreach (var p in merged)
+                {
+                    if (IsNestedSliver(p, merged))
+                    {
+                        sliversCulled++;
+                        LogReject("nestedSliver", new Dictionary<string, object>
+                        {
+                            ["thick"] = R2(p.Thickness),
+                            ["start"] = P2(p.CenterStart), ["end"] = P2(p.CenterEnd)
+                        });
+                        continue;
+                    }
+                    keptPairs.Add(p);
+                }
+                merged = keptPairs;
+
                 int wallsAfterMerge = merged.Count(p => p.Length >= MinWallLengthFt);
 
                 // ---- level / wall types / build ----
@@ -604,6 +631,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["rejectedPairsOverlap"] = pairsNoOverlap,
                     ["pairsInsidePoche"] = pairsInsidePoche,
                     ["pairsOutsidePoche"] = pairsOutsidePoche,
+                    ["sliversCulled"] = sliversCulled,
                     ["rejectStageCounts"] = stageCounts,
                     ["mergedCenterlines"] = merged.Count,
                     ["wallsCreated"] = created,
@@ -836,6 +864,51 @@ namespace RevitMCPCommandSet.Services.Dwg
                 }
             }
             return inside;
+        }
+
+        // Nested sliver test (pocket-door slots): true when pair a is thin
+        // (< PocketSlotDepthFt) and a mate exists that is clearly longer and
+        // thicker, near-parallel, whose band contains a's centerline rail and
+        // whose span contains a's span. Pocket strips pair into spurious
+        // short walls inside the band of the containing wall — this culls
+        // them without touching genuine thin walls elsewhere in the plan.
+        private static bool IsNestedSliver(WallPair a, List<WallPair> all)
+        {
+            if (a.Thickness >= PocketSlotDepthFt) return false;
+            var dA = a.CenterEnd - a.CenterStart;
+            double lenA = dA.GetLength();
+            if (lenA < 1e-9) return false;
+            var uA = dA / lenA;
+            foreach (var b in all)
+            {
+                if (ReferenceEquals(a, b)) continue;
+                if (b.Thickness < a.Thickness + 0.02) continue;
+                var dB = b.CenterEnd - b.CenterStart;
+                double lenB = dB.GetLength();
+                if (lenB < 1e-9) continue;
+                if (lenB < lenA * 1.25) continue; // must be clearly longer
+
+                // Project a's mid onto b's rail frame: rail offset within b's
+                // band (half its thickness + small slop)?
+                var mB = (b.CenterStart + b.CenterEnd) * 0.5;
+                var uB = dB / lenB;
+                var nB = new XYZ(-uB.Y, uB.X, 0);
+                var mA = (a.CenterStart + a.CenterEnd) * 0.5;
+                var rel = mA - mB;
+                double along = rel.DotProduct(uB);
+                double perp = rel.DotProduct(nB);
+                if (Math.Abs(perp) > b.Thickness / 2.0 + SliverRailTolFt) continue;
+                if (Math.Abs(uA.DotProduct(uB)) < 0.995) continue; // rails must be near-parallel
+
+                // Span containment in b's frame
+                double a0 = (a.CenterStart - mB).DotProduct(uB);
+                double a1 = (a.CenterEnd - mB).DotProduct(uB);
+                double b0 = along - lenB / 2.0, b1 = along + lenB / 2.0;
+                double lo = Math.Min(a0, a1), hi = Math.Max(a0, a1);
+                if (lo < b0 - 0.1 || hi > b1 + 0.1) continue;
+                return true;
+            }
+            return false;
         }
 
         private static double R2(double v) { return Math.Round(v, 2); }
