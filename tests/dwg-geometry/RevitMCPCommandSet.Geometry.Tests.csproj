@@ -11,6 +11,7 @@
          Revit-free, so the test project compiles the same source file
          directly (link) instead of referencing the net48 assembly. -->
     <Compile Include="..\..\dwg-commandset\Geometry\PocheGeometryCore.cs" Link="PocheGeometryCore.cs" />
+    <Compile Include="..\..\dwg-commandset\Geometry\WallComparator.cs" Link="WallComparator.cs" />
     <PackageReference Include="TUnit" Version="0.4.*" />
   </ItemGroup>
 </Project>
