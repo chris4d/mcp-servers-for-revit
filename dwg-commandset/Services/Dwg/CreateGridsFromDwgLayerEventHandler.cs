@@ -114,7 +114,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 double z = DwgCurveSource.MedianZ(allCurves);
                 Level level = null;
                 if (LevelId > 0)
-                    level = doc.GetElement(new ElementId(LevelId)) as Level;
+                    level = doc.GetElement(new ElementId((int)LevelId)) as Level;
                 if (level == null)
                 {
                     level = new FilteredElementCollector(doc)
@@ -257,3 +257,4 @@ namespace RevitMCPCommandSet.Services.Dwg
         }
     }
 }
+

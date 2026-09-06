@@ -334,7 +334,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 // ---- Level ----
                 double z = DwgCurveSource.MedianZ(layerCurves);
                 Level level = null;
-                if (LevelId > 0) level = doc.GetElement(new ElementId(LevelId)) as Level;
+                if (LevelId > 0) level = doc.GetElement(new ElementId((int)LevelId)) as Level;
                 if (level == null)
                     level = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
                         .OrderBy(l => Math.Abs(l.Elevation - z)).FirstOrDefault();
@@ -552,3 +552,4 @@ namespace RevitMCPCommandSet.Services.Dwg
         }
     }
 }
+
