@@ -39,7 +39,7 @@ namespace RevitMCPCommandSet.Services.Dwg
         public string PocheLayer { get; set; } = "";
         public double HeightFt { get; set; } = 10.0;
         public double MaxWallThicknessFt { get; set; } = 3.0;
-        public double MinWallLengthFt { get; set; } = 3.5;
+        public double MinWallLengthFt { get; set; } = 2.0;
         public string WallTypeName { get; set; }
         public bool ExcludeDoorArcs { get; set; } = true;
         public long LevelId { get; set; } = -1;

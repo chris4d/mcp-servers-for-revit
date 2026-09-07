@@ -31,9 +31,9 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
           minWallLengthFt: z
             .number()
             .positive()
-            .default(3.5)
+            .default(2.0)
             .optional()
-            .describe("Minimum wall centerline length in feet; shorter centerlines are rejected as jamb linework (default 3.5)."),
+            .describe("Minimum wall centerline length in feet (default 2; lower to keep sill/patch segments). Shorter centerlines are rejected as jamb linework."),
           wallTypeName: z
             .string()
             .optional()
@@ -65,7 +65,7 @@ export function registerCreateWallsFromDwgPocheTool(server: McpServer) {
         pocheLayer: d.pocheLayer ?? "",
         heightFt: d.heightFt ?? 10,
         maxWallThicknessFt: d.maxWallThicknessFt ?? 5.0,
-        minWallLengthFt: d.minWallLengthFt ?? 3.5,
+        minWallLengthFt: d.minWallLengthFt ?? 2.0,
         excludeDoorArcs: d.excludeDoorArcs ?? true,
         maxWalls: d.maxWalls ?? 200,
       };
