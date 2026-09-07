@@ -76,7 +76,7 @@ namespace RevitMCPCommandSet.Geometry
         public double PairAngleTolDeg = 2.0;
         public double MinOverlapFrac = 0.7;
         public double ClusterAngleTolRad = 2.0 * Math.PI / 180.0;
-        public double MergeGapFt = 0.5;
+        public double MergeGapFt = 0.8;
         public double MaxOpeningGapFt = 8.0;
         public double BridgeThicknessTolFt = 0.05;
         public double JambPerpMinDeg = 60.0;
