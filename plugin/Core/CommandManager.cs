@@ -4,6 +4,7 @@ using RevitMCPSDK.API.Utils;
 using revit_mcp_plugin.Configuration;
 using revit_mcp_plugin.Utils;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 
@@ -119,9 +120,15 @@ namespace revit_mcp_plugin.Core
                     return;
                 }
 
+                bool matched = false;
+
                 // 加载程序集
                 // Load assembly.
                 Assembly assembly = Assembly.LoadFrom(assemblyPath);
+
+                // 记录程序集中实际可用的命令名，用于诊断名称不一致
+                // Track command names actually exposed by the DLL to surface name drift.
+                var availableNames = new List<string>();
 
                 // 查找实现 IRevitCommand 接口的类型
                 // Find types that implement the IRevitCommand interface.
@@ -163,12 +170,15 @@ namespace revit_mcp_plugin.Core
                                 }
                             }
 
+                            availableNames.Add(command.CommandName);
+
                             // 检查命令名称是否与配置匹配
                             // Check whether the command name matches the configuration.
                             if (command.CommandName == config.CommandName)
                             {
                                 _commandRegistry.RegisterCommand(command);
-                                _logger.Info("创建命令实例失败 [{0}]: {1}\nFailed to create command instance [{0}]: {1}",
+                                matched = true;
+                                _logger.Info("命令注册成功 [{0}]: {1}\nCommand instance registered [{0}]: {1}",
                                     command.CommandName, Path.GetFileName(assemblyPath));
                                 break; // 找到匹配的命令后退出循环 - Exit the loop after finding a matching command.
                             }
@@ -178,6 +188,16 @@ namespace revit_mcp_plugin.Core
                             _logger.Error("创建命令实例失败 [{0}]: {1}\nFailed to create command instance [{0}]: {1}", type.FullName, ex.Message);
                         }
                     }
+                }
+
+                // 若程序集中没有任何命令名与配置匹配，输出诊断信息
+                // If no command name in the assembly matches the config, warn loudly.
+                if (!matched)
+                {
+                    string names = availableNames.Count > 0 ? string.Join(", ", availableNames) : "(none)";
+                    _logger.Warning("程序集 {0} 中未找到与配置名一致的命令 \"{1}\"；可用名称: {2}\nAssembly {0} exposes no command named \"{1}\"; available names: {2}. " +
+                        "Fix commandName in commandRegistry.json/command.json to match the IRevitCommand.CommandName.",
+                        Path.GetFileName(assemblyPath), config.CommandName, names);
                 }
             }
             catch (Exception ex)
