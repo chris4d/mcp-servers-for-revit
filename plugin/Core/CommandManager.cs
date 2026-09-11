@@ -95,6 +95,58 @@ namespace revit_mcp_plugin.Core
         }
 
         /// <summary>
+        /// <para>热重载：重新注册与 fileNameFilter 匹配的程序集中的命令。</para>
+        /// <para>Hot reload: re-registers commands from assemblies whose file
+        /// name contains fileNameFilter (null = all assemblies). Command
+        /// instances are recreated and ReplaceCommand in the registry
+        /// overwrites the old entries by CommandName.</para>
+        /// </summary>
+        public int ReloadCommands(string fileNameFilter)
+        {
+            int reloaded = 0;
+            string currentVersion = _versionAdapter.GetRevitVersion();
+            foreach (var commandConfig in _configManager.Config.Commands)
+            {
+                try
+                {
+                    if (!commandConfig.Enabled) continue;
+
+                    if (commandConfig.SupportedRevitVersions != null &&
+                        commandConfig.SupportedRevitVersions.Length > 0 &&
+                        !_versionAdapter.IsVersionSupported(commandConfig.SupportedRevitVersions))
+                        continue;
+
+                    string path = commandConfig.AssemblyPath.Contains("{VERSION}")
+                        ? commandConfig.AssemblyPath.Replace("{VERSION}", currentVersion)
+                        : commandConfig.AssemblyPath;
+                    commandConfig.AssemblyPath = path; // in-place, matches LoadCommands behavior
+                    if (!Path.IsPathRooted(path))
+                    {
+                        string baseDir = PathManager.GetCommandsDirectoryPath();
+                        path = Path.Combine(baseDir, path);
+                    }
+                    string fileName = Path.GetFileName(path);
+                    if (fileNameFilter != null &&
+                        fileName.IndexOf(fileNameFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                    if (!File.Exists(path))
+                        continue;
+
+                    CommandSetLoader.Invalidate(path);
+                    LoadCommandFromAssembly(commandConfig);
+                    reloaded++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error("热重载命令 {0} 失败: {1}\nHot reload of {0} failed: {1}",
+                        commandConfig.CommandName, ex.Message);
+                }
+            }
+            _logger.Info("热重载完成: {0} 条命令配置\nHot reload complete: {0} command configs reprocessed.", reloaded);
+            return reloaded;
+        }
+
+        /// <summary>
         /// 加载特定程序集中的特定命令
         /// Loads specific commands in specific assemblies.
         /// </summary>
@@ -122,9 +174,9 @@ namespace revit_mcp_plugin.Core
 
                 bool matched = false;
 
-                // 加载程序集
-                // Load assembly.
-                Assembly assembly = Assembly.LoadFrom(assemblyPath);
+                // 加载程序集（字节加载，支持热重载；文件不被锁定）
+                // Load assembly (byte-based, live-reload capable; the file on disk is not locked).
+                Assembly assembly = CommandSetLoader.Resolve(assemblyPath, _logger);
 
                 // 记录程序集中实际可用的命令名，用于诊断名称不一致
                 // Track command names actually exposed by the DLL to surface name drift.
