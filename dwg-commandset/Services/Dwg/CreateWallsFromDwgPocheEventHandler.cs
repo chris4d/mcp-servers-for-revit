@@ -108,6 +108,8 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                 string layerFilter = string.IsNullOrWhiteSpace(PocheLayer) ? null : PocheLayer.Trim();
 
+                long harvestMs = 0, pipelineMs = 0, buildingMs = 0;
+
                 int flatSolids = 0, facesInspected = 0, facesKept = 0, degenerateFaces = 0;
                 var loops = new List<List<XYZ>>();
                 var loopSeen = new HashSet<string>();
@@ -193,7 +195,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
                 }
                 var geo = target.get_Geometry(new Options());
+                var swHarvest = System.Diagnostics.Stopwatch.StartNew();
                 if (geo != null) Walk(geo);
+                harvestMs = swHarvest.ElapsedMilliseconds;
 
                 if (loops.Count == 0)
                 {
@@ -212,7 +216,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                 // ---- geometry pipeline (pure core, unit-tested) ----
                 var geoLoops = loops.Select(l => l.Select(p => new Pt(p.X, p.Y)).ToList()).ToList();
                 var gopt = new PochePipelineOptions { MaxWallThicknessFt = MaxWallThicknessFt };
+                var swPipeline = System.Diagnostics.Stopwatch.StartNew();
                 var pipe = PocheGeometryCore.RunPipeline(geoLoops, gopt);
+                pipelineMs = swPipeline.ElapsedMilliseconds;
                 var rejects = pipe.RejectLog.Entries;
                 var stageCounts = pipe.RejectLog.StageCounts;
                 int straightRuns = pipe.StraightRuns;
@@ -279,16 +285,30 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var createdIds = new List<long>();
                 var typeSummary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 int created = 0, rejectedJamb = 0, doorArcRejected = 0, buildFailed = 0;
+                var buildFailures = new List<string>();
+                var swTotal = System.Diagnostics.Stopwatch.StartNew();
+
+                // Debug trace target (mirrors mcp_resolver_debug.log).
+                string swoLogPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mcp_poche_debug.log");
+                Action<string> swo = msg =>
+                {
+                    try { System.IO.File.AppendAllText(swoLogPath, string.Format("[{0:HH:mm:ss.fff}] {1}\n", DateTime.Now, msg)); }
+                    catch { }
+                };
+
+                swo(string.Format("stage=setup loops={0} merged={1} harvestMs={2} pipelineMs={3}",
+                    loops.Count, merged.Count, harvestMs, pipelineMs));
 
                 using (var trans = new Transaction(doc, "Create Walls from DWG Poche"))
                 {
                     var fo = trans.GetFailureHandlingOptions();
                     trans.SetFailureHandlingOptions(fo.SetFailuresPreprocessor(preprocessor));
                     trans.Start();
+                    var swBuild = System.Diagnostics.Stopwatch.StartNew();
 
                     foreach (var pair in merged)
                     {
-                        if (created >= MaxWalls) break;
+                        if (created + buildFailed >= MaxWalls) break;
 
                         if (pair.Length < MinWallLengthFt)
                         {
@@ -345,17 +365,25 @@ namespace RevitMCPCommandSet.Services.Dwg
                                     else buildFailed++;
                                     sub.Commit();
                                 }
-                                catch
+                                catch (Exception bex)
                                 {
                                     buildFailed++;
+                                    buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: {5}",
+                                        Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
+                                        Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
+                                        Math.Round(pair.Thickness,2), bex.Message));
+                                    swo(string.Format("buildFail len={0} {1}", Math.Round(pair.Length,2), buildFailures[buildFailures.Count-1]));
                                 }
                             }
                         }
                         catch { buildFailed++; }
                     }
 
+                    buildingMs = swBuild.ElapsedMilliseconds;
                     trans.Commit();
                 }
+                swo(string.Format("stage=done created={0} buildFailed={1} jambRej={2} arcRej={3} buildMs={4} totalMs={5}",
+                    created, buildFailed, rejectedJamb, doorArcRejected, buildingMs, swTotal.ElapsedMilliseconds));
 
                 Result = new Dictionary<string, object>
                 {
@@ -395,8 +423,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["wallsCreated"] = created,
                     ["rejectedJamb"] = rejectedJamb,
                 ["doorArcRejected"] = doorArcRejected,
-                ["buildFailed"] = buildFailed,
-                ["minWallLengthFt"] = MinWallLengthFt,
+                    ["buildFailed"] = buildFailed,
+                    ["buildFailures"] = buildFailures,
+                    ["harvestMs"] = harvestMs,
+                    ["pipelineMs"] = pipelineMs,
+                    ["buildingMs"] = buildingMs,
+                    ["minWallLengthFt"] = MinWallLengthFt,
                 ["typeSummary"] = typeSummary,
                 ["createdIds"] = createdIds,
                 ["rejects"] = rejects,
