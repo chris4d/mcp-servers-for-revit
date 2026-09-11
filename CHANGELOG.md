@@ -13,14 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a build, without restarting Revit. Command set assemblies are byte-loaded
   (SHA-256 hash cached) so the files on disk are never locked by Revit.
   (`feature/live-command-reload`, `f3d6ea2`)
-- `dwg-commandset`: per-wall `SubTransaction` in the poche build loop — one
-  un-buildable wall no longer rolls back the whole batch (`0203a67`).
-- Geometry tuning for `create_walls_from_dwg_poche`: `MergeGapFt` 0.5 → 0.8
-  (`dbf18eb`), `minWallLengthFt` default 3.5 → 2.0 (`383fd70`),
-  `maxWallThicknessFt` relaxed to 5ft default, JambRatio gate disabled (`d2c0039`).
-- Pure 2D geometry core (`dwg-commandset/Geometry/PocheGeometryCore.cs`) extracted
-  from Revit API code, with behavior-locked unit tests (`tests/dwg-geometry`,
-  `05b738b`) and a `WallComparator` target-layout scorer (`0e3bb63`).
+- Per-wall `SubTransaction` in the poche build loop — one un-buildable wall no
+  longer rolls back the whole batch (`0203a67`).
 
 ## [1.1.2] - 2026-09-04
 
@@ -28,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - AnythingLLM client configuration in the installer (`3689ce3`), alongside
   Claude Desktop, Cursor, and opencode.
+- Geometry tuning for `create_walls_from_dwg_poche`: `MergeGapFt` 0.5 → 0.8
+  (`dbf18eb`), `minWallLengthFt` default 3.5 → 2.0 (`383fd70`),
+  `maxWallThicknessFt` relaxed to 5ft default, JambRatio gate disabled (`d2c0039`).
+- Pure 2D geometry core (`dwg-commandset/Geometry/PocheGeometryCore.cs`) extracted
+  from Revit API code, with behavior-locked unit tests (`tests/dwg-geometry`,
+  `05b738b`) and a `WallComparator` target-layout scorer (`0e3bb63`).
 
 ### Fixed
 
