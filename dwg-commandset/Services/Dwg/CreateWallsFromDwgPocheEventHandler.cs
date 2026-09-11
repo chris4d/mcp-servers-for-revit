@@ -324,17 +324,32 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                         try
                         {
-                            var centerLine = Line.CreateBound(new XYZ(pair.Sx, pair.Sy, 0), new XYZ(pair.Ex, pair.Ey, 0));
-                            var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
-                            if (wall != null)
+                            // Per-wall subtransaction: a commit-time failure
+                            // (wall-join conflicts, degenerate geometry) must
+                            // only roll back this wall, not the batch; a
+                            // preprocessor cannot delete error-level failures.
+                            using (var sub = new SubTransaction(doc))
                             {
-                                createdIds.Add(DwgCurveSource.IdValue(wall));
-                                created++;
-                                string tn = wt.Name;
-                                if (typeSummary.ContainsKey(tn)) typeSummary[tn]++;
-                                else typeSummary[tn] = 1;
+                                try
+                                {
+                                    var centerLine = Line.CreateBound(new XYZ(pair.Sx, pair.Sy, 0), new XYZ(pair.Ex, pair.Ey, 0));
+                                    var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
+                                    if (wall != null)
+                                    {
+                                        createdIds.Add(DwgCurveSource.IdValue(wall));
+                                        created++;
+                                        string tn2 = wt.Name;
+                                        if (typeSummary.ContainsKey(tn2)) typeSummary[tn2]++;
+                                        else typeSummary[tn2] = 1;
+                                    }
+                                    else buildFailed++;
+                                    sub.Commit();
+                                }
+                                catch
+                                {
+                                    buildFailed++;
+                                }
                             }
-                            else buildFailed++;
                         }
                         catch { buildFailed++; }
                     }
