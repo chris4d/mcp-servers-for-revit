@@ -23,6 +23,53 @@ namespace revit_mcp_plugin.Core
         private static readonly Dictionary<string, Tuple<Assembly, string>> Cache =
             new Dictionary<string, Tuple<Assembly, string>>(StringComparer.OrdinalIgnoreCase);
 
+        private static bool _resolveHookInstalled;
+
+        /// <summary>
+        /// Installs an AppDomain.AssemblyResolve hook (once) that probes all
+        /// directories containing known command assemblies + their sibling folders.
+        /// Required because byte-loaded assemblies have no CodeBase for the
+        /// default loader to probe dependencies (e.g. Microsoft.CodeAnalysis).
+        /// </summary>
+        public static void EnsureResolveHook(params string[] probeDirectories)
+        {
+            if (_resolveHookInstalled) return;
+            _resolveHookInstalled = true;
+            AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
+            {
+                var name = new AssemblyName(args.Name).Name;
+                if (string.IsNullOrEmpty(name)) return null;
+
+                foreach (var dir in unionOfProbeDirs(probeDirectories))
+                {
+                    string candidate = Path.Combine(dir, name + ".dll");
+                    if (File.Exists(candidate))
+                    {
+                        try
+                        {
+                            return Assembly.Load(File.ReadAllBytes(candidate));
+                        }
+                        catch { }
+                    }
+                }
+                return null;
+            };
+        }
+
+        private static IEnumerable<string> unionOfProbeDirs(string[] configured)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in configured)
+            {
+                if (d != null && seen.Add(d)) yield return d;
+            }
+            foreach (var key in Cache.Keys)
+            {
+                string dir = Path.GetDirectoryName(key);
+                if (dir != null && seen.Add(dir)) yield return dir;
+            }
+        }
+
         public static Assembly Resolve(string assemblyPath, ILogger logger)
         {
             string hash = ComputeHash(assemblyPath);

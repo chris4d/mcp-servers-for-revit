@@ -99,6 +99,8 @@ namespace revit_mcp_plugin.Core
 
             // 加载命令
             // Load command.
+            CommandSetLoader.EnsureResolveHook(PathManager.GetCommandsDirectoryPath());
+
             CommandManager commandManager = new CommandManager(
                 _commandRegistry, _logger, configManager, _uiApp);
             commandManager.LoadCommands();
