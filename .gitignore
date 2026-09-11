@@ -371,3 +371,8 @@ FodyWeavers.xsd
 # =============================================================================
 .claude/
 .DS_Store
+
+
+# Inno Setup staging + built installer output
+installer/staged/
+installer/output/
