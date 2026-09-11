@@ -37,22 +37,65 @@ namespace revit_mcp_plugin.Core
             _resolveHookInstalled = true;
             AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
             {
-                var name = new AssemblyName(args.Name).Name;
+                // Debug trace: append every resolver invocation to a log.
+                try
+                {
+                    string reqName = "?";
+                    string reqLoc = "?";
+                    try { if (args.RequestingAssembly != null) reqName = args.RequestingAssembly.GetName().Name; } catch { }
+                    try { reqLoc = (args.RequestingAssembly != null && !args.RequestingAssembly.IsDynamic) ? args.RequestingAssembly.Location : "(byte/codebase)"; } catch { }
+                    File.AppendAllText(
+                        Path.Combine(Path.GetTempPath(), "mcp_resolver_debug.log"),
+                        string.Format("[{0:HH:mm:ss.fff}] REQ \"{1}\" full=\"{2}\" asking={3} @ {4}\n",
+                            DateTime.Now, new AssemblyName(args.Name).Name, args.Name, reqName, reqLoc));
+                }
+                catch { }
+
+                var requested = new AssemblyName(args.Name);
+                var name = requested.Name;
                 if (string.IsNullOrEmpty(name)) return null;
 
+                // Strip the RETARGETED/redirected version for logging clarity —
+                // then look for a candidate whose assembly identity matches the
+                // requested version when possible; a mismatched identity returned
+                // from AssemblyResolve is DISCARDED by the netfx JIT binder, so
+                // fall back to name-match only when no exact fit exists.
+                string exactMatch = null;
+                string nameMatch = null;
                 foreach (var dir in unionOfProbeDirs(probeDirectories))
                 {
                     string candidate = Path.Combine(dir, name + ".dll");
-                    if (File.Exists(candidate))
+                    if (!File.Exists(candidate)) continue;
+                    try
                     {
-                        try
+                        var identity = System.Reflection.AssemblyName.GetAssemblyName(candidate);
+                        if (requested.Version != null && identity.Version == requested.Version)
                         {
-                            return Assembly.Load(File.ReadAllBytes(candidate));
+                            exactMatch = candidate;
+                            break;
                         }
-                        catch { }
+                        if (nameMatch == null) nameMatch = candidate;
                     }
+                    catch { }
                 }
-                return null;
+
+                string chosen = exactMatch ?? nameMatch;
+                try
+                {
+                    File.AppendAllText(
+                        Path.Combine(Path.GetTempPath(), "mcp_resolver_debug.log"),
+                        string.Format("[{0:HH:mm:ss.fff}]   chose: {1}\n", DateTime.Now, chosen ?? "(none)"));
+                }
+                catch { }
+                if (chosen == null) return null;
+                try
+                {
+                    return Assembly.Load(File.ReadAllBytes(chosen));
+                }
+                catch
+                {
+                    return null;
+                }
             };
         }
 
