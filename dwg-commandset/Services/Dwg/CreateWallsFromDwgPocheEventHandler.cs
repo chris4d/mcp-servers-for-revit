@@ -299,6 +299,45 @@ namespace RevitMCPCommandSet.Services.Dwg
                 swo(string.Format("stage=setup loops={0} merged={1} harvestMs={2} pipelineMs={3}",
                     loops.Count, merged.Count, harvestMs, pipelineMs));
 
+                // Batch failure pipeline: the app-level FailuresProcessing delegate
+                // deletes warnings and, on error-level failures ("can't make wall"),
+                // forces silent rollback so no modal dialog can block the socket;
+                // the offending per-wall SubTransaction dies alone and the batch
+                // continues. NEVER use ProceedWithCommit here — that triggers an
+                // infinite failure-processing loop / UI lock.
+                var fpApp = doc.Application;
+                EventHandler<Autodesk.Revit.DB.Events.FailuresProcessingEventArgs> fpHandler = (sender, args) =>
+                {
+                    try
+                    {
+                        var fa = args.GetFailuresAccessor();
+                        bool hasError = false;
+                        foreach (var msg in fa.GetFailureMessages())
+                        {
+                            var severity = msg.GetSeverity();
+                            string desc = msg.GetDescriptionText();
+                            if (severity == FailureSeverity.Warning)
+                            {
+                                fa.DeleteWarning(msg);
+                            }
+                            else if (severity == FailureSeverity.Error)
+                            {
+                                hasError = true;
+                                buildFailures.Add("failureEvent: " + desc);
+                                swo("failureEvent " + desc);
+                            }
+                        }
+                        if (hasError)
+                        {
+                            buildFailed++;
+                            args.SetProcessingResult(FailureProcessingResult.ProceedWithRollBack);
+                        }
+                    }
+                    catch { }
+                };
+                fpApp.FailuresProcessing += fpHandler;
+                try
+                {
                 using (var trans = new Transaction(doc, "Create Walls from DWG Poche"))
                 {
                     var fo = trans.GetFailureHandlingOptions();
@@ -381,6 +420,11 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                     buildingMs = swBuild.ElapsedMilliseconds;
                     trans.Commit();
+                }
+                }
+                finally
+                {
+                    doc.Application.FailuresProcessing -= fpHandler;
                 }
                 swo(string.Format("stage=done created={0} buildFailed={1} jambRej={2} arcRej={3} buildMs={4} totalMs={5}",
                     created, buildFailed, rejectedJamb, doorArcRejected, buildingMs, swTotal.ElapsedMilliseconds));
