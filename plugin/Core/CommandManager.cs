@@ -131,6 +131,11 @@ namespace revit_mcp_plugin.Core
                         continue;
                     if (!File.Exists(path))
                         continue;
+                    if (string.Equals(fileName, "RevitMCPCommandSet.dll", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.Warning("RevitMCPCommandSet 通过 LoadFrom 常驻加载，无法热重载，请重启 Revit\nRevitMCPCommandSet is LoadFrom-resident; restart Revit to reload it.");
+                        continue;
+                    }
 
                     CommandSetLoader.Invalidate(path);
                     LoadCommandFromAssembly(commandConfig);
@@ -174,9 +179,22 @@ namespace revit_mcp_plugin.Core
 
                 bool matched = false;
 
-                // 加载程序集（字节加载，支持热重载；文件不被锁定）
-                // Load assembly (byte-based, live-reload capable; the file on disk is not locked).
-                Assembly assembly = CommandSetLoader.Resolve(assemblyPath, _logger);
+                // 加载程序集。
+                // The dynamic-code host (RevitMCPCommandSet) loads via LoadFrom so
+                // its Roslyn chain resolves by sibling probing (byte loads lose the
+                // dependency-location context and end up on Revit's own old
+                // System.Collections.Immutable, which lacks ImmutableCollectionsMarshal).
+                // All other command sets keep the byte-load live-reload capability and
+                // their files never lock.
+                Assembly assembly;
+                if (string.Equals(Path.GetFileName(assemblyPath), "RevitMCPCommandSet.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    assembly = Assembly.LoadFrom(assemblyPath);
+                }
+                else
+                {
+                    assembly = CommandSetLoader.Resolve(assemblyPath, _logger);
+                }
 
                 // 记录程序集中实际可用的命令名，用于诊断名称不一致
                 // Track command names actually exposed by the DLL to surface name drift.
