@@ -64,19 +64,38 @@ namespace revit_mcp_plugin.Core
                 string nameMatch = null;
                 foreach (var dir in unionOfProbeDirs(probeDirectories))
                 {
-                    string candidate = Path.Combine(dir, name + ".dll");
-                    if (!File.Exists(candidate)) continue;
-                    try
+                    // Main folder first: candidate file may satisfy exact or name match.
+                    // Then dir\legacy\ — legacy copies exist ONLY to satisfy exact
+                    // version identities of dependencies (e.g. netfx SpanHelpers
+                    // binding System.Runtime.CompilerServices.Unsafe 4.0.4.1 while
+                    // the folder's main copy serves the modern 6.0.0.0 identity).
+                    // A legacy file is never returned as a mere name-match because
+                    // that would bind an old identity over a newer request.
+                    string legacyDir = Path.Combine(dir, "legacy");
+                    string[] candidates =
                     {
-                        var identity = System.Reflection.AssemblyName.GetAssemblyName(candidate);
-                        if (requested.Version != null && identity.Version == requested.Version)
+                        Path.Combine(dir, name + ".dll"),
+                        Path.Combine(legacyDir, name + ".dll")
+                    };
+                    foreach (string candidate in candidates)
+                    {
+                        if (!File.Exists(candidate)) continue;
+                        try
                         {
-                            exactMatch = candidate;
-                            break;
+                            var identity = System.Reflection.AssemblyName.GetAssemblyName(candidate);
+                            if (requested.Version != null && identity.Version == requested.Version)
+                            {
+                                exactMatch = candidate;
+                                break;
+                            }
+                            if (nameMatch == null && !candidate.Contains("\\legacy\\"))
+                            {
+                                nameMatch = candidate;
+                            }
                         }
-                        if (nameMatch == null) nameMatch = candidate;
+                        catch { }
                     }
-                    catch { }
+                    if (exactMatch != null) break;
                 }
 
                 string chosen = exactMatch ?? nameMatch;
