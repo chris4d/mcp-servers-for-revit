@@ -284,7 +284,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var preprocessor = new SilentWarningsPreprocessor();
                 var createdIds = new List<long>();
                 var typeSummary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                int created = 0, rejectedJamb = 0, doorArcRejected = 0, buildFailed = 0;
+                int created = 0, rejectedJamb = 0, doorArcRejected = 0, buildFailed = 0, joinRetries = 0;
                 var buildFailures = new List<string>();
                 var swTotal = System.Diagnostics.Stopwatch.StartNew();
 
@@ -389,45 +389,63 @@ namespace RevitMCPCommandSet.Services.Dwg
                             // A full transaction with forced modal handling
                             // disabled processes failures headlessly and rolls
                             // back only this wall.
-                            using (var wallTrans = new Transaction(doc, "Poche wall"))
+                            // Attempt 0: normal (joins allowed). If the commit
+                            // fails ("Can't keep elements joined"), attempt 1
+                            // retries the same wall with wall joins disallowed
+                            // so junction stubs still get built.
+                            bool committed = false;
+                            for (int attempt = 0; attempt < 2 && !committed; attempt++)
                             {
-                                var wfo = wallTrans.GetFailureHandlingOptions();
-                                wfo.SetFailuresPreprocessor(preprocessor);
-                                wfo.SetClearAfterRollback(true);
-                                wfo.SetForcedModalHandling(false);
-                                wallTrans.SetFailureHandlingOptions(wfo);
-                                wallTrans.Start();
-                                try
+                                using (var wallTrans = new Transaction(doc, attempt == 0 ? "Poche wall" : "Poche wall (no join)"))
                                 {
-                                    var centerLine = Line.CreateBound(new XYZ(pair.Sx, pair.Sy, 0), new XYZ(pair.Ex, pair.Ey, 0));
-                                    var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
-                                    var status = wallTrans.Commit();
-                                    if (status == TransactionStatus.Committed && wall != null)
+                                    var wfo = wallTrans.GetFailureHandlingOptions();
+                                    wfo.SetFailuresPreprocessor(preprocessor);
+                                    wfo.SetClearAfterRollback(true);
+                                    wfo.SetForcedModalHandling(false);
+                                    wallTrans.SetFailureHandlingOptions(wfo);
+                                    wallTrans.Start();
+                                    try
                                     {
-                                        createdIds.Add(DwgCurveSource.IdValue(wall));
-                                        created++;
-                                        string tn2 = wt.Name;
-                                        if (typeSummary.ContainsKey(tn2)) typeSummary[tn2]++;
-                                        else typeSummary[tn2] = 1;
+                                        var centerLine = Line.CreateBound(new XYZ(pair.Sx, pair.Sy, 0), new XYZ(pair.Ex, pair.Ey, 0));
+                                        var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
+                                        if (attempt == 1 && wall != null)
+                                        {
+                                            WallUtils.DisallowWallJoinAtEnd(wall, 0);
+                                            WallUtils.DisallowWallJoinAtEnd(wall, 1);
+                                        }
+                                        var status = wallTrans.Commit();
+                                        if (status == TransactionStatus.Committed && wall != null)
+                                        {
+                                            createdIds.Add(DwgCurveSource.IdValue(wall));
+                                            created++;
+                                            if (attempt == 1) joinRetries++;
+                                            string tn2 = wt.Name;
+                                            if (typeSummary.ContainsKey(tn2)) typeSummary[tn2]++;
+                                            else typeSummary[tn2] = 1;
+                                            committed = true;
+                                        }
+                                        else if (attempt == 1)
+                                        {
+                                            buildFailed++;
+                                            buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: status={5}",
+                                                Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
+                                                Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
+                                                Math.Round(pair.Thickness,2), status));
+                                            swo(string.Format("buildFail len={0} status={1}", Math.Round(pair.Length,2), status));
+                                        }
                                     }
-                                    else
+                                    catch (Exception bex)
                                     {
-                                        buildFailed++;
-                                        buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: status={5}",
-                                            Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
-                                            Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
-                                            Math.Round(pair.Thickness,2), status));
-                                        swo(string.Format("buildFail len={0} status={1}", Math.Round(pair.Length,2), status));
+                                        if (attempt == 1)
+                                        {
+                                            buildFailed++;
+                                            buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: {5}",
+                                                Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
+                                                Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
+                                                Math.Round(pair.Thickness,2), bex.Message));
+                                            swo(string.Format("buildFail len={0} {1}", Math.Round(pair.Length,2), buildFailures[buildFailures.Count-1]));
+                                        }
                                     }
-                                }
-                                catch (Exception bex)
-                                {
-                                    buildFailed++;
-                                    buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: {5}",
-                                        Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
-                                        Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
-                                        Math.Round(pair.Thickness,2), bex.Message));
-                                    swo(string.Format("buildFail len={0} {1}", Math.Round(pair.Length,2), buildFailures[buildFailures.Count-1]));
                                 }
                             }
                         }
@@ -482,6 +500,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["rejectedJamb"] = rejectedJamb,
                 ["doorArcRejected"] = doorArcRejected,
                     ["buildFailed"] = buildFailed,
+                    ["joinRetries"] = joinRetries,
                     ["buildFailures"] = buildFailures,
                     ["revitFailureLog"] = preprocessor.Log,
                     ["harvestMs"] = harvestMs,
