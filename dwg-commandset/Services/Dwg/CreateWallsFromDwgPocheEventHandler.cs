@@ -289,11 +289,15 @@ namespace RevitMCPCommandSet.Services.Dwg
                 var swTotal = System.Diagnostics.Stopwatch.StartNew();
 
                 // Debug trace target (mirrors mcp_resolver_debug.log).
+                // Fallback to %APPDATA% because writes to the Revit process's
+                // temp have been observed to silently fail.
                 string swoLogPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mcp_poche_debug.log");
+                string swoFallbackPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "mcp_poche_debug.log");
                 Action<string> swo = msg =>
                 {
                     try { System.IO.File.AppendAllText(swoLogPath, string.Format("[{0:HH:mm:ss.fff}] {1}\n", DateTime.Now, msg)); }
-                    catch { }
+                    catch { try { System.IO.File.AppendAllText(swoFallbackPath, string.Format("[{0:HH:mm:ss.fff}] {1}\n", DateTime.Now, msg)); } catch { } }
                 };
 
                 swo(string.Format("stage=setup loops={0} merged={1} harvestMs={2} pipelineMs={3}",
@@ -336,14 +340,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                     catch { }
                 };
                 fpApp.FailuresProcessing += fpHandler;
+                var swBuild = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
-                using (var trans = new Transaction(doc, "Create Walls from DWG Poche"))
-                {
-                    var fo = trans.GetFailureHandlingOptions();
-                    trans.SetFailureHandlingOptions(fo.SetFailuresPreprocessor(preprocessor));
-                    trans.Start();
-                    var swBuild = System.Diagnostics.Stopwatch.StartNew();
 
                     foreach (var pair in merged)
                     {
@@ -383,17 +382,27 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                         try
                         {
-                            // Per-wall subtransaction: a commit-time failure
-                            // (wall-join conflicts, degenerate geometry) must
-                            // only roll back this wall, not the batch; a
-                            // preprocessor cannot delete error-level failures.
-                            using (var sub = new SubTransaction(doc))
+                            // Per-wall transaction (off-axis fixer pattern):
+                            // SubTransactions cannot take failure-handling
+                            // options, so error-level failures ("can't make
+                            // wall") escape to a modal that wedges the socket.
+                            // A full transaction with forced modal handling
+                            // disabled processes failures headlessly and rolls
+                            // back only this wall.
+                            using (var wallTrans = new Transaction(doc, "Poche wall"))
                             {
+                                var wfo = wallTrans.GetFailureHandlingOptions();
+                                wfo.SetFailuresPreprocessor(preprocessor);
+                                wfo.SetClearAfterRollback(true);
+                                wfo.SetForcedModalHandling(false);
+                                wallTrans.SetFailureHandlingOptions(wfo);
+                                wallTrans.Start();
                                 try
                                 {
                                     var centerLine = Line.CreateBound(new XYZ(pair.Sx, pair.Sy, 0), new XYZ(pair.Ex, pair.Ey, 0));
                                     var wall = Wall.Create(doc, centerLine, wt.Id, level.Id, HeightFt, 0, false, false);
-                                    if (wall != null)
+                                    var status = wallTrans.Commit();
+                                    if (status == TransactionStatus.Committed && wall != null)
                                     {
                                         createdIds.Add(DwgCurveSource.IdValue(wall));
                                         created++;
@@ -401,8 +410,15 @@ namespace RevitMCPCommandSet.Services.Dwg
                                         if (typeSummary.ContainsKey(tn2)) typeSummary[tn2]++;
                                         else typeSummary[tn2] = 1;
                                     }
-                                    else buildFailed++;
-                                    sub.Commit();
+                                    else
+                                    {
+                                        buildFailed++;
+                                        buildFailures.Add(string.Format("({0},{1})-({2},{3}) t={4}: status={5}",
+                                            Math.Round(pair.Sx,2), Math.Round(pair.Sy,2),
+                                            Math.Round(pair.Ex,2), Math.Round(pair.Ey,2),
+                                            Math.Round(pair.Thickness,2), status));
+                                        swo(string.Format("buildFail len={0} status={1}", Math.Round(pair.Length,2), status));
+                                    }
                                 }
                                 catch (Exception bex)
                                 {
@@ -419,12 +435,10 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
 
                     buildingMs = swBuild.ElapsedMilliseconds;
-                    trans.Commit();
-                }
                 }
                 finally
                 {
-                    doc.Application.FailuresProcessing -= fpHandler;
+                    fpApp.FailuresProcessing -= fpHandler;
                 }
                 swo(string.Format("stage=done created={0} buildFailed={1} jambRej={2} arcRej={3} buildMs={4} totalMs={5}",
                     created, buildFailed, rejectedJamb, doorArcRejected, buildingMs, swTotal.ElapsedMilliseconds));
