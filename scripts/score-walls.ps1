@@ -43,7 +43,12 @@ function Get-Inter($t, $c) {
     $along = $dx * $t.ux + $dy * $t.uy
     $px = $dx - $t.ux * $along; $py = $dy - $t.uy * $along
     $perp = [math]::Sqrt($px * $px + $py * $py)
-    $thickOv = (($t.w + $c.w) / 2.0) - $perp
+    # Intersection band along the perpendicular axis: target spans [-wt/2,+wt/2],
+    # created spans [perp-wc/2, perp+wc/2]. Overlap width is their intersection
+    # (for perp=0 this is min(wt,wc) - NOT (wt+wc)/2, which is the union band).
+    $loP = [math]::Max(-$t.w / 2.0, $perp - $c.w / 2.0)
+    $hiP = [math]::Min($t.w / 2.0, $perp + $c.w / 2.0)
+    $thickOv = $hiP - $loP
     if ($thickOv -le 0.0 -or $t.len -le 0.0) {
         return @{ area = 0.0; perp = $perp; spanFrac = 0.0 }
     }
@@ -178,6 +183,49 @@ if ($extras.Count -gt 0) {
     $extras | Sort-Object -Property area -Descending | Select-Object -First 10 |
         ForEach-Object { "  ({0:N1},{1:N1})-({2:N1},{3:N1}) L={4:N1} w={5:N2}" -f $_.sx, $_.sy, $_.ex, $_.ey, $_.len, $_.w }
 }
+
+# --- union coverage diagnostic: how much of each target's rail is covered by
+# --- ANY created wall (ignores fragmentation: two pieces covering one target
+# --- count fully). If unionRecall >> recall, fragmentation is the main gap.
+$unionLen = New-Object System.Collections.Generic.List[double]
+for ($ti = 0; $ti -lt $tList.Count; $ti++) {
+    $t = $tList[$ti]
+    $ivals = New-Object System.Collections.Generic.List[object]
+    foreach ($p in $pairs) {
+        if ($p.ti -ne $ti) { continue }
+        $c = $cList[$p.ci]
+        $dx = $c.sx - $t.sx; $dy = $c.sy - $t.sy
+        $along = $dx * $t.ux + $dy * $t.uy
+        $px2 = $dx - $t.ux * $along; $py2 = $dy - $t.uy * $along
+        if ([math]::Sqrt($px2 * $px2 + $py2 * $py2) -gt (($t.w + $c.w) / 2.0)) { continue }
+        $s1 = $along
+        $s2 = $along + (($c.ex - $c.sx) * $t.ux + ($c.ey - $c.sy) * $t.uy)
+        $lo2 = [math]::Max([math]::Min($s1, $s2), 0.0)
+        $hi2 = [math]::Min([math]::Max($s1, $s2), $t.len)
+        if ($hi2 -gt $lo2) { $ivals.Add([pscustomobject]@{ lo = $lo2; hi = $hi2 }) }
+    }
+    if ($ivals.Count -eq 0) { $unionLen.Add(0.0); continue }
+    $sortedIv = @($ivals | Sort-Object -Property lo)
+    $cov = 0.0; $curLo = 0.0; $curHi = 0.0; $started = $false
+    foreach ($iv in $sortedIv) {
+        if (-not $started) { $started = $true; $curLo = $iv.lo; $curHi = $iv.hi }
+        elseif ($iv.lo -le $curHi) { if ($iv.hi -gt $curHi) { $curHi = $iv.hi } }
+        else { $cov += $curHi - $curLo; $curLo = $iv.lo; $curHi = $iv.hi }
+    }
+    if ($started) { $cov += $curHi - $curLo }
+    $unionLen.Add($cov)
+}
+$unionArea = 0.0
+for ($i = 0; $i -lt $tList.Count; $i++) { $unionArea += $unionLen[$i] * $tList[$i].w }
+Write-Output ""
+Write-Output ("union coverage (fragmentation-blind): {0:N4} of target area  [1x1 recall was {1:N4}]" -f ($unionArea / $sumAreaT), $recall)
+$fullCov = 0; $noneCov = 0
+for ($i = 0; $i -lt $tList.Count; $i++) {
+    if ($tList[$i].len -le 0) { continue }
+    $frac = $unionLen[$i] / $tList[$i].len
+    if ($frac -ge 0.98) { $fullCov++ } elseif ($frac -le 0.02) { $noneCov++ }
+}
+Write-Output ("targets fully covered (>=98% of rail): {0} / {1}   with zero coverage: {2}" -f $fullCov, $tList.Count, $noneCov)
 
 # --- per-bucket recall (short walls are targets too) ---
 Write-Output ""

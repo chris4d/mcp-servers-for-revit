@@ -483,6 +483,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 ["doorArcRejected"] = doorArcRejected,
                     ["buildFailed"] = buildFailed,
                     ["buildFailures"] = buildFailures,
+                    ["revitFailureLog"] = preprocessor.Log,
                     ["harvestMs"] = harvestMs,
                     ["pipelineMs"] = pipelineMs,
                     ["buildingMs"] = buildingMs,
