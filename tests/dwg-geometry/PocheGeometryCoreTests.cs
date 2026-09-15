@@ -345,19 +345,57 @@ namespace RevitMCPCommandSet.Geometry.Tests
         public async Task LegitTWall_NotCulled()
         {
             // A real T-junction: thin stub ending at the keeper's face (its
-            // centerline stops at the rail, margin fails) plus a thin nub must
-            // survive; neither is thick, neither crosses interiorly.
+            // centerline stops at the rail, margin fails) must survive. A
+            // thin nub sitting ON the keeper's rail is redundant (its whole
+            // rectangle is inside the keeper) and is culled as a strip.
             var walls = new List<WallPairCore>
             {
                 W(0, 10, 20, 10, 1.0),        // keeper
-                W(5, 10, 5, 13, 0.83),        // T stub: starts AT the keeper rail
-                W(9.8, 10, 11, 10, 0.75)      // thin nub overlapping the rail
+                W(5, 10, 5, 13, 0.83),        // T stub: starts AT the keeper rail - perpendicular, survives
+                W(9.8, 10, 11, 10, 0.75)      // redundant nub on the rail - culled as a strip
             };
             var stats = new PocheGeometryCore.DedupStats();
             var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
 
-            await Assert.That(outWalls.Count).IsEqualTo(3);
-            await Assert.That(stats.Fragments + stats.Bands + stats.Stubs).IsEqualTo(0);
+            await Assert.That(outWalls.Count).IsEqualTo(2);
+            await Assert.That(stats.Strips).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task PocketSlotStrip_HuggingBand_IsCulled()
+        {
+            // Pocket-door anatomy: a 1ft band wall plus a thin strip whose
+            // rail sits inside the band (from pairing the ~4in channel edges
+            // with the band face). The strip is redundant - culled.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 10, 10, 1.0),      // real band wall (longer, thicker)
+                W(2, 9.9, 6, 9.9, 0.75)     // slot strip, rail 0.1ft inside the band
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(1);
+            await Assert.That(stats.Strips).IsEqualTo(1);
+            await Assert.That(outWalls[0].Sx).IsEqualTo(0.0).Within(0.01);   // band survives
+        }
+
+        [Test]
+        public async Task AdjacentWythe_RailInsideBandButNoOverlap_StaysSeparate()
+        {
+            // West-wing shape: a thinner wall beside a thick wall, rail inside
+            // the thick wall's band, but their spans do NOT overlap (the two
+            // walls butt end-to-end along the rail). Must survive.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 0, 0, 10, 3.83),       // 46in wall (long, thick)
+                W(0.58, 10, 0.58, 14, 2.67)  // 32in wall, rail inside the band, spans touch but don't overlap
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(2);
+            await Assert.That(stats.Strips).IsEqualTo(0);
         }
 
         [Test]

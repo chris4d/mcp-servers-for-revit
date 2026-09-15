@@ -498,6 +498,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["dedupFragmentsCulled"] = pipe.DedupFragmentsCulled,
                     ["dedupBandsCulled"] = pipe.DedupBandsCulled,
                     ["dedupStubsCulled"] = pipe.DedupStubsCulled,
+                    ["dedupStripsCulled"] = pipe.DedupStripsCulled,
                     ["dedupAbsorbed"] = pipe.DedupAbsorbed,
                     ["extendsDone"] = pipe.ExtendsDone,
                     ["bridgedOpenings"] = bridgeStats.Bridged,

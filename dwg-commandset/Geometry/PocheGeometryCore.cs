@@ -97,6 +97,17 @@ namespace RevitMCPCommandSet.Geometry
         public double DedupCullOverlapFrac = 0.5;       // along-overlap fraction of the shorter wall
         public double DedupMergePerpFt = 0.35;         // merge: rail offset bound
         public double DedupMergeGapFt = 0.05;          // merge: max along gap (overlap/abut only - real walls can sit 3+ ft apart on one rail)
+
+        // ---- pocket-door strip rule ----
+        // Domain fact: the only intentional sub-6in gaps between parallel
+        // rails are pocket-door channels (~4in x door-width cut into the
+        // wall band). Pairing across the channel edges yields thin "slot
+        // strip" walls hugging the real band wall; their area is already
+        // inside the band wall, so they are culled as redundant.
+        public double DedupStripRailTolFt = 0.05;      // strip rail may sit this far outside the mate's band edge
+        public double DedupStripOverlapFrac = 0.7;     // strip span must overlap the mate by this fraction of the shorter
+        public double DedupStripMinThickDelta = 0.02;   // mate must be thicker than the strip by this much
+        public double DedupStripMinLenRatio = 1.05;     // mate must be clearly longer - protects equal-length real wall pairs
         public double StubMaxLenFt = 3.5;              // crossing stub: max length
         public double StubMinThickFt = 2.5;            // crossing stub: min thickness
         public double StubCrossMarginFt = 0.2;         // crossing must be this far inside both spans
@@ -132,6 +143,7 @@ namespace RevitMCPCommandSet.Geometry
         public int DedupFragmentsCulled;
         public int DedupBandsCulled;
         public int DedupStubsCulled;
+        public int DedupStripsCulled;
         public int DedupAbsorbed;
         public int ExtendsDone;
         public List<WallPairCore> Merged = new List<WallPairCore>();
@@ -394,6 +406,7 @@ namespace RevitMCPCommandSet.Geometry
             res.DedupFragmentsCulled = dedup.Fragments;
             res.DedupBandsCulled = dedup.Bands;
             res.DedupStubsCulled = dedup.Stubs;
+            res.DedupStripsCulled = dedup.Strips;
             res.DedupAbsorbed = dedup.Absorbed;
 
             // ---- end extension: snap wall ends outward to the rail of the
@@ -418,6 +431,7 @@ namespace RevitMCPCommandSet.Geometry
             public int Fragments;
             public int Bands;
             public int Stubs;
+            public int Strips;
             public int Absorbed;
         }
 
@@ -911,6 +925,27 @@ namespace RevitMCPCommandSet.Geometry
                             {
                                 stats.Bands++;
                                 LogCull(rejects, "dedupBand", cand, k);
+                                consumed = true;
+                                break;
+                            }
+
+                            // A: pocket-door slot strip - the candidate's rail
+                            // lies inside a clearly longer, thicker mate's
+                            // band and largely overlaps it. Pocket-door
+                            // channels (~4in gap in the pochte, never
+                            // intentional otherwise) yield thin strips
+                            // hugging the real band wall; their area is
+                            // already inside the mate. The length margin
+                            // keeps equal-length parallel pairs (two real
+                            // thin walls with a junk band between them).
+                            if (candShorter &&
+                                k.Length >= cand.Length * opt.DedupStripMinLenRatio &&
+                                k.Thickness > cand.Thickness + opt.DedupStripMinThickDelta &&
+                                perp <= k.Thickness / 2.0 + opt.DedupStripRailTolFt &&
+                                ov >= opt.DedupStripOverlapFrac * minLen)
+                            {
+                                stats.Strips++;
+                                LogCull(rejects, "dedupStrip", cand, k);
                                 consumed = true;
                                 break;
                             }
