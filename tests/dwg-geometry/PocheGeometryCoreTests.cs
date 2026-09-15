@@ -354,4 +354,180 @@ namespace RevitMCPCommandSet.Geometry.Tests
             await Assert.That(stats.Absorbed).IsEqualTo(0);
         }
     }
+
+    // End extension: walls end on crossing walls' rails (reference
+    // convention). Only outward moves; crossing wall must reach the
+    // junction and be long enough to be a wall.
+    public class ExtendEndsTests
+    {
+        private static PochePipelineOptions Opt() => new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
+
+        private static WallPairCore W(double sx, double sy, double ex, double ey, double thick)
+            => new WallPairCore { Sx = sx, Sy = sy, Ex = ex, Ey = ey, Thickness = thick };
+
+        [Test]
+        public async Task EndNearCrossingWall_ExtendsToItsRail()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(2, 10, 8, 10, 1.0),   // stops 2ft short of the vertical wall's rail
+                W(10, 5, 10, 25, 1.0)   // vertical crossing wall
+            };
+            int extended;
+            var outWalls = PocheGeometryCore.ExtendEnds(walls, Opt(), null, null, out extended);
+
+            await Assert.That(extended).IsEqualTo(1);
+            await Assert.That(outWalls[0].Ex).IsEqualTo(10.0).Within(0.01);
+            await Assert.That(outWalls[0].Sx).IsEqualTo(2.0).Within(0.01);
+        }
+
+        [Test]
+        public async Task CrossingWallTooShort_NoExtension()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(2, 10, 8, 10, 1.0),
+                W(10, 12, 10, 25, 1.0)   // rail crosses at (10,10) but span starts at y=12
+            };
+            int extended;
+            var outWalls = PocheGeometryCore.ExtendEnds(walls, Opt(), null, null, out extended);
+
+            await Assert.That(extended).IsEqualTo(0);
+            await Assert.That(outWalls[0].Ex).IsEqualTo(8.0).Within(0.01);
+        }
+
+        [Test]
+        public async Task BeyondMaxRange_NoExtension()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(2, 10, 4, 10, 1.0),   // 6ft short of the crossing rail
+                W(10, 5, 10, 25, 1.0)
+            };
+            int extended;
+            var outWalls = PocheGeometryCore.ExtendEnds(walls, Opt(), null, null, out extended);
+
+            await Assert.That(extended).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task ParallelWall_IsNotAnExtensionTarget()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(2, 10, 8, 10, 1.0),
+                W(12, 10, 20, 10, 1.0)   // parallel, 4ft ahead: not a crossing wall
+            };
+            int extended;
+            var outWalls = PocheGeometryCore.ExtendEnds(walls, Opt(), null, null, out extended);
+
+            await Assert.That(extended).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task TwoEnds_BothExtendBetweenCrossingWalls()
+        {
+            // Vertical stub bracketed by two horizontal walls that span the
+            // junction: both ends extend onto their rails (the test.dwg
+            // bracket pattern).
+            var walls = new List<WallPairCore>
+            {
+                W(10, 18, 10, 21, 1.0),   // vertical stub
+                W(5, 15, 12, 15, 1.0),    // horizontal below, spans x=10
+                W(5, 23, 12, 23, 1.0)     // horizontal above, spans x=10
+            };
+            int extended;
+            var outWalls = PocheGeometryCore.ExtendEnds(walls, Opt(), null, null, out extended);
+
+            await Assert.That(extended).IsEqualTo(2);
+            await Assert.That(outWalls[0].Sy).IsEqualTo(15.0).Within(0.01);
+            await Assert.That(outWalls[0].Ey).IsEqualTo(23.0).Within(0.01);
+        }
+    }
+
+    // Evidence-gated gap bridging: beyond jamb runs, a crossing wall's
+    // piece through the gap or hatch at the gap midpoint explains a
+    // junction interruption; door openings carry neither evidence.
+    public class JunctionEvidenceTests
+    {
+        private static PochePipelineOptions Opt()
+        {
+            var o = new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
+            o.EnableJunctionEvidenceBridge = true;
+            return o;
+        }
+
+        [Test]
+        public async Task GapWithCrossingPiece_IsBridged()
+        {
+            // rail fragments on v=0 (am=0: cu=1, su=0): [0,5] and [8.5,11.5],
+            // thickness 1.0 - gap 3.5ft (beyond the silent-merge band) with a
+            // perpendicular piece straddling the rail inside the gap.
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
+            var pieces = new List<double[]>
+            {
+                new[] { 6.5, -2.0, 6.5, 2.0, 1.0, 0 }   // vertical piece crossing the rail at u=6.5
+            };
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, pieces, null);
+
+            await Assert.That(railsOut.Count).IsEqualTo(1);
+            await Assert.That(railsOut[0][1]).IsEqualTo(0.0).Within(0.01);      // u0
+            await Assert.That(railsOut[0][2]).IsEqualTo(11.5).Within(0.01);     // u1 - bridged
+            await Assert.That(stats.BridgedEvidence).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task GapWithHatchAtMidpoint_IsBridged()
+        {
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
+            // hatch patch covering the gap midpoint (6.75, 0)
+            var loops = new List<List<Pt>>
+            {
+                RingHelpers.Ring((6.0, -1.0), (7.5, -1.0), (7.5, 1.0), (6.0, 1.0))
+            };
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, null, loops);
+
+            await Assert.That(railsOut.Count).IsEqualTo(1);
+            await Assert.That(railsOut[0][2]).IsEqualTo(11.5).Within(0.01);
+            await Assert.That(stats.BridgedEvidence).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task GapWithoutEvidence_StaysSplit()
+        {
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, null, null);
+
+            await Assert.That(railsOut.Count).IsEqualTo(2);
+            await Assert.That(stats.Unbridged).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task DoorOpeningGap_CrossingOutsideGapStaysSplit()
+        {
+            // a perpendicular piece exists but crosses OUTSIDE the gap span
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
+            var pieces = new List<double[]>
+            {
+                new[] { 3.0, -2.0, 3.0, 2.0, 1.0, 0 }   // crosses at u=3 - inside the WALL, not the gap
+            };
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, pieces, null);
+
+            await Assert.That(railsOut.Count).IsEqualTo(2);
+            await Assert.That(stats.BridgedEvidence).IsEqualTo(0);
+        }
+    }
 }
+

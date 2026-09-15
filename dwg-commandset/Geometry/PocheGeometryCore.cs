@@ -29,6 +29,7 @@ namespace RevitMCPCommandSet.Geometry
     {
         public int Silent;
         public int Bridged;
+        public int BridgedEvidence;
         public int Unbridged;
     }
 
@@ -100,6 +101,20 @@ namespace RevitMCPCommandSet.Geometry
         public double StubMinThickFt = 2.5;            // crossing stub: min thickness
         public double StubCrossMarginFt = 0.2;         // crossing must be this far inside both spans
         public double StubCrossMaxDot = 0.35;          // crossing stub is near-perpendicular
+
+        // ---- end extension (snap ends to crossing walls' rails) ----
+        public double ExtMaxFt = 4.0;                  // max extension distance per end
+        public double ExtCrossMaxDot = 0.5;            // crossing wall is meaningfully non-parallel
+        public double ExtCrossSpanMarginFt = 0.5;      // crossing wall must span the junction by this margin
+        public double ExtCrossMinLenFt = 1.5;         // ignore stub walls as extension targets
+        public double ExtMaxThickFt = 2.0;             // thick walls (junction bands) don't extend
+        public double ExtPocheTolFt = 0.35;            // extension segment must stay inside hatch (sampled)
+
+        // ---- bridge evidence beyond jamb runs ----
+        public double BridgeCrossMaxDot = 0.35;       // crossing piece is near-perpendicular to the rail
+        public double BridgeCrossSnapFt = 0.75;       // crossing point may sit past the gap edges by this much
+        public bool EnableJunctionEvidenceBridge = false; // A/B: evidence bridging merged noise-band fragments (run 6b precision loss)
+        public bool EnableEndExtension = false;        // A/B: end extension was recall/precision neutral on test.dwg (run 6c/6d vs 6a); kept for drawings with rail-terminated conventions
     }
 
     public class PochePipelineResult
@@ -118,6 +133,7 @@ namespace RevitMCPCommandSet.Geometry
         public int DedupBandsCulled;
         public int DedupStubsCulled;
         public int DedupAbsorbed;
+        public int ExtendsDone;
         public List<WallPairCore> Merged = new List<WallPairCore>();
         public List<WallPairCore> MergedAll = new List<WallPairCore>();
         public List<Pt> JambMidpoints = new List<Pt>();
@@ -339,7 +355,7 @@ namespace RevitMCPCommandSet.Geometry
             }
 
             // ---- independent collinear merge (with opening bridging) ----
-            res.Merged = MergeCollinear(res.CenterlinePieces, res.JambMidpoints, res.Bridge, opt, res.RejectLog);
+            res.Merged = MergeCollinear(res.CenterlinePieces, res.JambMidpoints, res.Bridge, opt, res.RejectLog, loops);
             res.MergedAll = new List<WallPairCore>(res.Merged);
 
             // ---- pocket-door slot filter (nested sliver pairs) ----
@@ -370,6 +386,16 @@ namespace RevitMCPCommandSet.Geometry
             res.DedupStubsCulled = dedup.Stubs;
             res.DedupAbsorbed = dedup.Absorbed;
 
+            // ---- end extension: snap wall ends outward to the rail of the
+            // nearest crossing wall (reference convention: walls end on
+            // crossing walls' rails) ----
+            int extended = 0;
+            if (opt.EnableEndExtension)
+            {
+                res.Merged = ExtendEnds(res.Merged, opt, res.RejectLog, loops, out extended);
+            }
+            res.ExtendsDone = extended;
+
             res.MergedCenterlines = res.Merged.Count;
             return res;
         }
@@ -386,10 +412,11 @@ namespace RevitMCPCommandSet.Geometry
         }
 
         /// <summary>
-        /// Cross-loop collinear merge of centerline pieces.
+        /// Cross-loop collinear merge of centerline pieces. Loops are needed
+        /// for evidence-gated bridging (gap midpoint inside a hatch patch).
         /// </summary>
         public static List<WallPairCore> MergeCollinear(List<double[]> pieces, List<Pt> jambMidpoints,
-            BridgeStatsCore stats, PochePipelineOptions opt, RejectLog rejects)
+            BridgeStatsCore stats, PochePipelineOptions opt, RejectLog rejects, List<List<Pt>> loops)
         {
             var wallPairs = new List<WallPairCore>();
             var items = pieces
@@ -471,9 +498,9 @@ namespace RevitMCPCommandSet.Geometry
                 {
                     if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
                     else if (Math.Abs(f[0] - railV) <= opt.RailTolFt) { curRail.Add(f); }
-                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects); railV = f[0]; curRail.Add(f); }
+                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, loops); railV = f[0]; curRail.Add(f); }
                 }
-                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects);
+                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, loops);
 
                 foreach (var r in railsOut)
                 {
@@ -494,12 +521,14 @@ namespace RevitMCPCommandSet.Geometry
 
         /// <summary>
         /// Chain one rail's fragments: silent merge for sloppy gaps, bridged
-        /// merge for opening gaps with thickness agreement + jamb evidence;
+        /// merge for opening gaps with thickness agreement + evidence (jamb
+        /// runs, a crossing wall's piece through the gap, or hatch at the gap
+        /// midpoint - the latter two explain junction interruptions);
         /// otherwise the rail splits (and the gap is logged).
         /// </summary>
         public static void FlushRailWithBridge(List<double[]> curRail, double railV, List<double[]> railsOut,
             double am, double cu, double su, List<Pt> jambMidpoints, BridgeStatsCore stats,
-            PochePipelineOptions opt, RejectLog rejects)
+            PochePipelineOptions opt, RejectLog rejects, List<double[]> allPieces, List<List<Pt>> loops)
         {
             if (curRail.Count == 0) return;
             curRail.Sort((a, b) => a[1].CompareTo(b[1]));
@@ -522,6 +551,15 @@ namespace RevitMCPCommandSet.Geometry
                     if (curRail[k][3] > thick) thick = curRail[k][3];
                     stats.Bridged++;
                 }
+                else if (opt.EnableJunctionEvidenceBridge &&
+                         gap <= opt.MaxOpeningGapFt &&
+                         Math.Abs(curRail[k][3] - thick) <= opt.BridgeThicknessTolFt &&
+                         HasJunctionEvidence(allPieces, loops, am, cu, su, railV, u1, f0, opt))
+                {
+                    if (f1 > u1) u1 = f1;
+                    if (curRail[k][3] > thick) thick = curRail[k][3];
+                    stats.BridgedEvidence++;
+                }
                 else
                 {
                     railsOut.Add(new double[] { railV, u0, u1, thick });
@@ -539,6 +577,49 @@ namespace RevitMCPCommandSet.Geometry
             }
             railsOut.Add(new double[] { railV, u0, u1, thick });
             curRail.Clear();
+        }
+
+        /// <summary>
+        /// Junction evidence for gap bridging beyond jamb runs: (a) a
+        /// near-perpendicular piece whose rail crosses this rail inside the
+        /// gap span (a crossing wall explains the face interruption), or (b)
+        /// the gap midpoint lies inside/near a hatch patch (the crossing
+        /// wall's own pochte). Door openings carry neither: hatches break at
+        /// openings and no crossing wall passes through.
+        /// </summary>
+        public static bool HasJunctionEvidence(List<double[]> allPieces, List<List<Pt>> loops,
+            double am, double cu, double su, double railV, double gapStartU, double gapEndU, PochePipelineOptions opt)
+        {
+            if (allPieces != null)
+            {
+                foreach (var p in allPieces)
+                {
+                    double dx = p[2] - p[0], dy = p[3] - p[1];
+                    double pl = Math.Sqrt(dx * dx + dy * dy);
+                    if (pl < 1e-9) continue;
+                    // piece direction in the cluster frame
+                    double pu = (dx * cu + dy * su) / pl;
+                    double pv = (-dx * su + dy * cu) / pl;
+                    if (Math.Abs(pu) > opt.BridgeCrossMaxDot) continue;   // near-perpendicular to the rail
+                    // piece endpoints in the cluster frame
+                    double uA = p[0] * cu + p[1] * su, vA = -p[0] * su + p[1] * cu;
+                    double uB = p[2] * cu + p[3] * su, vB = -p[2] * su + p[3] * cu;
+                    double vLo = Math.Min(vA, vB), vHi = Math.Max(vA, vB);
+                    if (vLo > railV + opt.RailTolFt || vHi < railV - opt.RailTolFt) continue;  // doesn't reach this rail
+                    // where the piece crosses railV (interpolate along the piece)
+                    double t = vB == vA ? 0.5 : (railV - vA) / (vB - vA);
+                    double uCross = uA + (uB - uA) * t;
+                    if (gapStartU - opt.BridgeCrossSnapFt <= uCross && uCross <= gapEndU + opt.BridgeCrossSnapFt)
+                        return true;
+                }
+            }
+            if (loops != null && loops.Count > 0)
+            {
+                double midU = (gapStartU + gapEndU) / 2.0;
+                var mid = new Pt(midU * cu - railV * su, midU * su + railV * cu);
+                if (InsideAnyPoche(mid, loops, opt.PocheProximityFt)) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -832,6 +913,99 @@ namespace RevitMCPCommandSet.Geometry
                 ["keeperLen"] = R2(keeper.Length),
                 ["keeperThick"] = R2(keeper.Thickness)
             });
+        }
+
+        /// <summary>
+        /// End extension: snap each wall's ends outward onto the rail line of
+        /// the nearest crossing wall when the junction is real - the crossing
+        /// wall is meaningfully non-parallel, long enough to be a wall (not a
+        /// jamb stub), and its span reaches the junction. Thick walls (likely
+        /// junction bands) never extend, and the extension segment must stay
+        /// inside the hatch (the wall physically continues there). Only
+        /// outward moves: ends never shorten.
+        /// </summary>
+        public static List<WallPairCore> ExtendEnds(List<WallPairCore> walls, PochePipelineOptions opt,
+            RejectLog rejects, List<List<Pt>> loops, out int extendedCount)
+        {
+            extendedCount = 0;
+            if (walls == null || walls.Count < 2) return walls;
+
+            var result = new List<WallPairCore>(walls);
+            for (int i = 0; i < result.Count; i++)
+            {
+                var w = result[i];
+                if (w.Thickness > opt.ExtMaxThickFt) continue;   // thick = junction band; leave alone
+                var d0 = w.End - w.Start;
+                double len = d0.Len();
+                if (len < 1e-9) continue;
+                var u = d0 * (1.0 / len);
+
+                for (int endIdx = 0; endIdx < 2; endIdx++)
+                {
+                    var endPt = endIdx == 0 ? w.Start : w.End;
+                    var outDir = endIdx == 0 ? new Pt(-u.X, -u.Y) : u;
+
+                    double bestT = opt.ExtMaxFt;
+                    Pt bestP = default(Pt);
+                    bool found = false;
+
+                    for (int j = 0; j < result.Count; j++)
+                    {
+                        if (j == i) continue;
+                        var c = result[j];
+                        if (c.Length < opt.ExtCrossMinLenFt) continue;
+                        var dc = c.End - c.Start;
+                        double lc = dc.Len();
+                        if (lc < 1e-9) continue;
+                        var uc = dc * (1.0 / lc);
+                        if (Math.Abs(u.Dot(uc)) > opt.ExtCrossMaxDot) continue;   // must be a crossing wall
+
+                        // intersect w's rail line with c's rail line:
+                        // endPt + t*outDir = c.Start + s*uc  (t outward along this
+                        // wall, s along the crossing wall)
+                        double denom2 = outDir.X * uc.Y - outDir.Y * uc.X;
+                        if (Math.Abs(denom2) < 1e-9) continue;   // parallel rails
+                        double rx = c.Sx - endPt.X, ry = c.Sy - endPt.Y;
+                        double t = (rx * uc.Y - ry * uc.X) / denom2;
+                        double s = (rx * outDir.Y - ry * outDir.X) / denom2;
+
+                        if (t <= 0.02 || t > bestT) continue;   // only outward, within range
+                        if (s < -opt.ExtCrossSpanMarginFt || s > lc + opt.ExtCrossSpanMarginFt) continue;   // crossing wall must reach the junction
+
+                        // the extension segment must lie inside the hatch:
+                        // sample its quarter points.
+                        if (loops != null && loops.Count > 0)
+                        {
+                            bool inside = true;
+                            for (int q = 1; q <= 3 && inside; q++)
+                            {
+                                double f = t * q / 4.0;
+                                var sample = new Pt(endPt.X + outDir.X * f, endPt.Y + outDir.Y * f);
+                                if (!InsideAnyPoche(sample, loops, opt.ExtPocheTolFt)) inside = false;
+                            }
+                            if (!inside) continue;
+                        }
+
+                        bestT = t;
+                        bestP = new Pt(endPt.X + outDir.X * t, endPt.Y + outDir.Y * t);
+                        found = true;
+                    }
+
+                    if (found)
+                    {
+                        if (endIdx == 0) { w.Sx = bestP.X; w.Sy = bestP.Y; }
+                        else { w.Ex = bestP.X; w.Ey = bestP.Y; }
+                        extendedCount++;
+                        if (rejects != null)
+                            rejects.Log("endExtend", new Dictionary<string, object>
+                            {
+                                ["dist"] = R2(bestT),
+                                ["point"] = new[] { Math.Round(bestP.X, 2), Math.Round(bestP.Y, 2) }
+                            });
+                    }
+                }
+            }
+            return result;
         }
     }
 }
