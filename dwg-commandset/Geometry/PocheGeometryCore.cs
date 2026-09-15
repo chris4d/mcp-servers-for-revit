@@ -86,6 +86,20 @@ namespace RevitMCPCommandSet.Geometry
         public double PocheProximityFt = 0.15;
         public double PocketSlotDepthFt = 0.5;
         public double SliverRailTolFt = 0.1;
+
+        // ---- post-merge cleanup pass (junction duplicates & cap stubs) ----
+        public double DedupAngleDot = 0.9962;          // ~5 deg near-parallel gate
+        public double DedupFragPerpFt = 0.2;            // same-rail fragment cull rail offset
+        public double DedupFragThickFt = 0.15;         // same-rail fragment cull thickness delta
+        public double DedupBandMinThickDelta = 0.4;    // thick junction band: min thickness excess over keeper
+        public double DedupRailCullTolFt = 1.25;       // thick junction band: max rail offset from keeper
+        public double DedupCullOverlapFrac = 0.5;       // along-overlap fraction of the shorter wall
+        public double DedupMergePerpFt = 0.35;         // merge: rail offset bound
+        public double DedupMergeGapFt = 0.05;          // merge: max along gap (overlap/abut only - real walls can sit 3+ ft apart on one rail)
+        public double StubMaxLenFt = 3.5;              // crossing stub: max length
+        public double StubMinThickFt = 2.5;            // crossing stub: min thickness
+        public double StubCrossMarginFt = 0.2;         // crossing must be this far inside both spans
+        public double StubCrossMaxDot = 0.35;          // crossing stub is near-perpendicular
     }
 
     public class PochePipelineResult
@@ -100,6 +114,10 @@ namespace RevitMCPCommandSet.Geometry
         public int PairsOutsidePoche;
         public int SliversCulled;
         public int MergedCenterlines;
+        public int DedupFragmentsCulled;
+        public int DedupBandsCulled;
+        public int DedupStubsCulled;
+        public int DedupAbsorbed;
         public List<WallPairCore> Merged = new List<WallPairCore>();
         public List<WallPairCore> MergedAll = new List<WallPairCore>();
         public List<Pt> JambMidpoints = new List<Pt>();
@@ -342,8 +360,29 @@ namespace RevitMCPCommandSet.Geometry
                 kept.Add(p);
             }
             res.Merged = kept;
+
+            // ---- post-merge cleanup: junction duplicates, thick edge bands,
+            // crossing cap stubs; same-rail fragments merge or cull ----
+            var dedup = new DedupStats();
+            res.Merged = DedupAndClean(res.Merged, opt, res.RejectLog, dedup);
+            res.DedupFragmentsCulled = dedup.Fragments;
+            res.DedupBandsCulled = dedup.Bands;
+            res.DedupStubsCulled = dedup.Stubs;
+            res.DedupAbsorbed = dedup.Absorbed;
+
             res.MergedCenterlines = res.Merged.Count;
             return res;
+        }
+
+        /// <summary>
+        /// Counters for the post-merge cleanup pass.
+        /// </summary>
+        public class DedupStats
+        {
+            public int Fragments;
+            public int Bands;
+            public int Stubs;
+            public int Absorbed;
         }
 
         /// <summary>
@@ -606,6 +645,193 @@ namespace RevitMCPCommandSet.Geometry
                 return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Post-merge cleanup pass over the final wall list. Processes walls
+        /// longest-first as keepers and applies, per (candidate, keeper) pair:
+        ///  C. crossing stub cull: short thick near-perpendicular candidate whose
+        ///     rail crosses a &gt;=2x longer keeper's rail well inside both spans
+        ///     (end-cap artifact), or crosses the rails of two near-parallel
+        ///     keepers (closed-rectangle pochte caps);
+        ///  A. rail cull (same-rail fragments: tiny rail offset and thickness
+        ///     agreement; or thick junction bands: candidate clearly thicker,
+        ///     rail outside the keeper's band) when along-overlap is high;
+        ///  B. rail merge: same rail, same thickness, small gap - the candidate
+        ///     is absorbed into the keeper's span (fragmentation fix).
+        /// Everything here is pure geometry; the reference layout is never seen.
+        /// </summary>
+        public static List<WallPairCore> DedupAndClean(List<WallPairCore> merged, PochePipelineOptions opt,
+            RejectLog rejects, DedupStats stats)
+        {
+            if (merged == null || merged.Count == 0) return merged;
+            var order = merged.OrderByDescending(p => p.Length).ThenByDescending(p => p.Thickness).ToList();
+            var keepers = new List<WallPairCore>();
+
+            // crossing info for stub rule, computed per candidate
+            for (int ci = 0; ci < order.Count; ci++)
+            {
+                var cand = order[ci];
+                bool consumed = false;
+
+                // ---- rule C: crossing stub ----
+                if (cand.Length <= opt.StubMaxLenFt && cand.Thickness >= opt.StubMinThickFt)
+                {
+                    var cu = (cand.End - cand.Start);
+                    double cl = cu.Len();
+                    if (cl > 1e-9)
+                    {
+                        cu = cu * (1.0 / cl);
+                        var crossings = new List<int>(); // keeper indices crossed interiorly
+                        for (int ki = 0; ki < keepers.Count; ki++)
+                        {
+                            var k = keepers[ki];
+                            var ku = k.End - k.Start;
+                            double kl = ku.Len();
+                            if (kl < 1e-9) continue;
+                            ku = ku * (1.0 / kl);
+                            double dotCK = Math.Abs(cu.Dot(ku));
+                            if (dotCK > opt.StubCrossMaxDot) continue;    // near-perpendicular only
+                            // solve cand.S + s*cu = k.S + t*ku (s along cand, t along keeper)
+                            double denom2 = cu.X * ku.Y - cu.Y * ku.X;
+                            if (Math.Abs(denom2) < 1e-9) continue;
+                            double rx = k.Sx - cand.Sx, ry = k.Sy - cand.Sy;
+                            double s = (rx * ku.Y - ry * ku.X) / denom2;
+                            double t = (rx * cu.Y - ry * cu.X) / denom2;
+                            double m = opt.StubCrossMarginFt;
+                            if (t < m || t > kl - m || s < m || s > cl - m) continue;
+                            if (kl >= 2.0 * cand.Length)
+                            {
+                                // single long keeper: end-cap crossing a wall's body
+                                stats.Stubs++;
+                                LogCull(rejects, "dedupStub", cand, k);
+                                consumed = true;
+                                break;
+                            }
+                            crossings.Add(ki);
+                        }
+                        if (!consumed && crossings.Count >= 2)
+                        {
+                            bool twoParallel = false;
+                            for (int x1 = 0; x1 < crossings.Count && !twoParallel; x1++)
+                            {
+                                for (int x2 = x1 + 1; x2 < crossings.Count && !twoParallel; x2++)
+                                {
+                                    var k1 = keepers[crossings[x1]];
+                                    var k2 = keepers[crossings[x2]];
+                                    var u1 = k1.End - k1.Start; u1 = u1 * (1.0 / u1.Len());
+                                    var u2 = k2.End - k2.Start; u2 = u2 * (1.0 / u2.Len());
+                                    if (Math.Abs(u1.Dot(u2)) >= opt.DedupAngleDot) twoParallel = true;
+                                }
+                            }
+                            if (twoParallel)
+                            {
+                                stats.Stubs++;
+                                LogCull(rejects, "dedupStubPair", cand, keepers[crossings[0]]);
+                                consumed = true;
+                            }
+                        }
+                    }
+                }
+
+                // ---- rules A/B: near-parallel against each keeper ----
+                if (!consumed)
+                {
+                    var cu2 = cand.End - cand.Start;
+                    double cl2 = cu2.Len();
+                    if (cl2 > 1e-9)
+                    {
+                        cu2 = cu2 * (1.0 / cl2);
+                        foreach (var k in keepers)
+                        {
+                            var ku = k.End - k.Start;
+                            double kl = ku.Len();
+                            if (kl < 1e-9) continue;
+                            ku = ku * (1.0 / kl);
+                            double dot = Math.Abs(cu2.Dot(ku));
+                            if (dot < opt.DedupAngleDot) continue;
+
+                            double rx = cand.Sx - k.Sx, ry = cand.Sy - k.Sy;
+                            double along = rx * ku.X + ry * ku.Y;
+                            double perp = Math.Abs(-rx * ku.Y + ry * ku.X);
+                            double cs = along;
+                            double ce = along + (cand.Ex - cand.Sx) * ku.X + (cand.Ey - cand.Sy) * ku.Y;
+                            double clo = Math.Min(cs, ce), chi = Math.Max(cs, ce);
+                            double ovLo = Math.Max(0.0, clo), ovHi = Math.Min(kl, chi);
+                            double ov = Math.Max(0.0, ovHi - ovLo);
+                            double minLen = Math.Min(cand.Length, k.Length);
+
+                            bool candShorter = cand.Length < k.Length ||
+                                (Math.Abs(cand.Length - k.Length) < 1e-9 && cand.Thickness <= k.Thickness);
+
+                            // A: fragment cull - same rail, same thickness
+                            if (candShorter && perp <= opt.DedupFragPerpFt &&
+                                Math.Abs(cand.Thickness - k.Thickness) <= opt.DedupFragThickFt &&
+                                ov >= opt.DedupCullOverlapFrac * minLen)
+                            {
+                                stats.Fragments++;
+                                LogCull(rejects, "dedupFragment", cand, k);
+                                consumed = true;
+                                break;
+                            }
+
+                            // A: thick junction band - clearly thicker, rail at or
+                            // outside the keeper's band face, high overlap
+                            if (candShorter && cand.Thickness - k.Thickness >= opt.DedupBandMinThickDelta &&
+                                perp <= opt.DedupRailCullTolFt && perp >= k.Thickness / 2.0 &&
+                                ov >= opt.DedupCullOverlapFrac * minLen)
+                            {
+                                stats.Bands++;
+                                LogCull(rejects, "dedupBand", cand, k);
+                                consumed = true;
+                                break;
+                            }
+
+                            // B: same-rail merge (fragmentation fix)
+                            if (perp <= opt.DedupMergePerpFt &&
+                                Math.Abs(cand.Thickness - k.Thickness) <= opt.BridgeThicknessTolFt)
+                            {
+                                double gap = ov > 0 ? 0.0 : (chi < 0 ? -clo : (clo - kl));
+                                if (gap <= opt.DedupMergeGapFt)
+                                {
+                                    double newLo = Math.Min(0.0, clo);
+                                    double newHi = Math.Max(kl, chi);
+                                    k.Sx = k.Sx + ku.X * newLo; k.Sy = k.Sy + ku.Y * newLo;
+                                    k.Ex = k.Sx + ku.X * (newHi - newLo); k.Ey = k.Sy + ku.Y * (newHi - newLo);
+                                    if (cand.Thickness > k.Thickness) k.Thickness = cand.Thickness;
+                                    stats.Absorbed++;
+                                    if (rejects != null)
+                                        rejects.Log("dedupAbsorbed", new Dictionary<string, object>
+                                        {
+                                            ["len"] = R2(cand.Length),
+                                            ["start"] = new[] { Math.Round(cand.Sx, 2), Math.Round(cand.Sy, 2) },
+                                            ["end"] = new[] { Math.Round(cand.Ex, 2), Math.Round(cand.Ey, 2) }
+                                        });
+                                    consumed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!consumed) keepers.Add(cand);
+            }
+            return keepers;
+        }
+
+        private static void LogCull(RejectLog rejects, string stage, WallPairCore cand, WallPairCore keeper)
+        {
+            if (rejects == null) return;
+            rejects.Log(stage, new Dictionary<string, object>
+            {
+                ["len"] = R2(cand.Length),
+                ["thick"] = R2(cand.Thickness),
+                ["start"] = new[] { Math.Round(cand.Sx, 2), Math.Round(cand.Sy, 2) },
+                ["end"] = new[] { Math.Round(cand.Ex, 2), Math.Round(cand.Ey, 2) },
+                ["keeperLen"] = R2(keeper.Length),
+                ["keeperThick"] = R2(keeper.Thickness)
+            });
         }
     }
 }

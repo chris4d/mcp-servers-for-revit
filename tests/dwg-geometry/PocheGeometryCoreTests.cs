@@ -163,4 +163,195 @@ namespace RevitMCPCommandSet.Geometry.Tests
             }
         }
     }
+
+    // Post-merge cleanup pass: junction duplicate bands, crossing cap
+    // stubs, same-rail fragment merge/cull. All rules run over the final
+    // wall list with no knowledge of the intended layout; the golden
+    // reference fixture doubles as a safety net (nothing real may be culled).
+    public class DedupAndCleanTests
+    {
+        private static PochePipelineOptions Opt() => new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
+
+        private static WallPairCore W(double sx, double sy, double ex, double ey, double thick)
+            => new WallPairCore { Sx = sx, Sy = sy, Ex = ex, Ey = ey, Thickness = thick };
+
+        [Test]
+        public async Task SameRailFragment_AbsorbedIntoLongerKeeper()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 7, 10, 1.0),      // keeper
+                W(6, 10, 16, 10, 1.0)      // overlapping piece on the same rail -> absorbed
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(1);
+            await Assert.That(stats.Absorbed).IsEqualTo(1);
+            await Assert.That(outWalls[0].Length).IsEqualTo(16.0).Within(0.01);
+        }
+
+        [Test]
+        public async Task SameRailGap_WallsStaySeparate()
+        {
+            // Real walls can sit a few feet apart on one rail (openings);
+            // a gap must NOT be bridged by the post-merge absorb rule.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 7, 10, 1.0),
+                W(9, 10, 16, 10, 1.0)      // 2ft gap: stays a separate wall
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(2);
+            await Assert.That(stats.Absorbed).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task OverlappingSameRailFragment_Culled()
+        {
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 20, 10, 1.0),   // keeper, longer
+                W(5, 10.02, 12, 10.02, 1.0) // overlapping piece on near-identical rail
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(1);
+            await Assert.That(stats.Fragments).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task ThickJunctionBand_HuggingWallEdge_IsCulled()
+        {
+            // Long thin wall + short thick band just outside its face
+            // (junction thickening): the band must be culled.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 20, 10, 1.0),   // keeper
+                W(5, 8.9, 10, 8.9, 3.0)  // thick band, rail 1.1 off the keeper rail
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(1);
+            await Assert.That(stats.Bands).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task RealWallInsideKeeperBand_IsNotCulled()
+        {
+            // Regression shape from test.dwg: a short real wall whose rail sits
+            // INSIDE a longer keeper's band (perp < keeper half-thickness) must
+            // survive: it is not an edge-hugging junction band.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10.25, 17, 10.25, 1.5),   // keeper (long horizontal, y=10.25)
+                W(14.0, 10.0, 15.25, 10.0, 2.0) // real short wall, rail 0.25 inside keeper band
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(2);
+            await Assert.That(stats.Fragments + stats.Bands + stats.Stubs).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task CrossingCapStub_AgainstLongKeeper_IsCulled()
+        {
+            // End-cap artifact: short thick stub crossing the body of a much
+            // longer wall (crossing point well inside both spans).
+            var walls = new List<WallPairCore>
+            {
+                W(10, 0, 10, 20, 1.0),      // keeper: vertical wall L=20
+                W(8, 10, 11, 10, 3.0)       // stub L=3 crossing at (10,10)
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(1);
+            await Assert.That(stats.Stubs).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task RectangleCapStub_CrossingTwoParallelKeepers_IsCulled()
+        {
+            // Closed-rectangle pochte caps: two short parallel walls plus a
+            // thick cap crossing both rails (keepers too short for the 2x rule).
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 4, 10, 1.0),
+                W(0, 11, 4, 11, 1.0),
+                W(2, 9.5, 2, 11.5, 3.0)      // cap: crosses both rails
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(2);
+            await Assert.That(stats.Stubs).IsEqualTo(1);
+        }
+
+        [Test]
+        public async Task LegitTWall_NotCulled()
+        {
+            // A real T-junction: thin stub ending at the keeper's face (its
+            // centerline stops at the rail, margin fails) plus a thin nub must
+            // survive; neither is thick, neither crosses interiorly.
+            var walls = new List<WallPairCore>
+            {
+                W(0, 10, 20, 10, 1.0),        // keeper
+                W(5, 10, 5, 13, 0.83),        // T stub: starts AT the keeper rail
+                W(9.8, 10, 11, 10, 0.75)      // thin nub overlapping the rail
+            };
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(3);
+            await Assert.That(stats.Fragments + stats.Bands + stats.Stubs).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task GoldenReferenceWalls_SurviveUnchanged()
+        {
+            // Safety invariant: the cleanup pass may never cull or absorb a
+            // wall from the golden reference layout (173 real walls from
+            // test.dwg). Exercises the exact rule thresholds against real
+            // wall geometry - adjacency cases included.
+            // Walk up from the test bin dir to the fixtures folder.
+            var dir = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
+            string path = null;
+            while (dir != null && path == null)
+            {
+                var cand = System.IO.Path.Combine(dir.FullName, "fixtures", "golden-targets.json");
+                if (System.IO.File.Exists(cand)) path = cand;
+                else dir = dir.Parent;
+            }
+            await Assert.That(path).IsNotNull();
+            var json = await System.IO.File.ReadAllTextAsync(path);
+            var walls = new List<WallPairCore>();
+            using (var doc = System.Text.Json.JsonDocument.Parse(json))
+            {
+                foreach (var el in doc.RootElement.EnumerateArray())
+                {
+                    // fixture stores reference layout at +500ft X offset; strip it
+                    // so coordinates match the created-wall frame used by the rules.
+                    walls.Add(W(
+                        el.GetProperty("sx").GetDouble() - 500.0,
+                        el.GetProperty("sy").GetDouble(),
+                        el.GetProperty("ex").GetDouble() - 500.0,
+                        el.GetProperty("ey").GetDouble(),
+                        el.GetProperty("w").GetDouble()));
+                }
+            }
+
+            var stats = new PocheGeometryCore.DedupStats();
+            var outWalls = PocheGeometryCore.DedupAndClean(walls, Opt(), null, stats);
+
+            await Assert.That(outWalls.Count).IsEqualTo(walls.Count);
+            await Assert.That(stats.Fragments + stats.Bands + stats.Stubs).IsEqualTo(0);
+            await Assert.That(stats.Absorbed).IsEqualTo(0);
+        }
+    }
 }
