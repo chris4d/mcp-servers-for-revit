@@ -111,7 +111,12 @@ namespace RevitMCPCommandSet.Services.Dwg
                 long harvestMs = 0, pipelineMs = 0, buildingMs = 0;
 
                 int flatSolids = 0, facesInspected = 0, facesKept = 0, degenerateFaces = 0;
-                var loops = new List<List<XYZ>>();
+                // Grouped by source face: each face contributes its complete
+                // ring set (outer ring + interior hole rings). Holes matter -
+                // even-odd containment treats a chase/shaft cavity as empty
+                // space, so faces across a cavity never pair into phantom
+                // walls.
+                var faceGroups = new List<List<List<XYZ>>>();
                 var loopSeen = new HashSet<string>();
                 var layerHistogram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 var zValues = new List<double>();
@@ -163,6 +168,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                             if (pf == null) { degenerateFaces++; continue; }
 
                             var loopsOfFace = pf.GetEdgesAsCurveLoops();
+                            var faceRings = new List<List<XYZ>>();
                             foreach (var loopDirs in loopsOfFace)
                             {
                                 var tess = new List<XYZ>();
@@ -189,8 +195,9 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                                 facesKept++;
                                 foreach (var p in vs) zValues.Add(p.Z);
-                                loops.Add(vs);
+                                faceRings.Add(vs);
                             }
+                            if (faceRings.Count > 0) faceGroups.Add(faceRings);
                         }
                     }
                 }
@@ -199,7 +206,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 if (geo != null) Walk(geo);
                 harvestMs = swHarvest.ElapsedMilliseconds;
 
-                if (loops.Count == 0)
+                if (faceGroups.Count == 0)
                 {
                     Result = new Dictionary<string, object>
                     {
@@ -214,7 +221,9 @@ namespace RevitMCPCommandSet.Services.Dwg
                 }
 
                 // ---- geometry pipeline (pure core, unit-tested) ----
-                var geoLoops = loops.Select(l => l.Select(p => new Pt(p.X, p.Y)).ToList()).ToList();
+                var geoLoops = faceGroups
+                    .Select(g => g.Select(l => l.Select(p => new Pt(p.X, p.Y)).ToList()).ToList())
+                    .ToList();
                 var gopt = new PochePipelineOptions { MaxWallThicknessFt = MaxWallThicknessFt };
                 var swPipeline = System.Diagnostics.Stopwatch.StartNew();
                 var pipe = PocheGeometryCore.RunPipeline(geoLoops, gopt);
@@ -301,7 +310,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                 };
 
                 swo(string.Format("stage=setup loops={0} merged={1} harvestMs={2} pipelineMs={3}",
-                    loops.Count, merged.Count, harvestMs, pipelineMs));
+                    faceGroups.Count, merged.Count, harvestMs, pipelineMs));
 
                 // Batch failure pipeline: the app-level FailuresProcessing delegate
                 // deletes warnings and, on error-level failures ("can't make wall"),
@@ -477,7 +486,8 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["facesKept"] = facesKept,
                     ["degenerateFaces"] = degenerateFaces,
                     ["faceLayerHistogram"] = layerHistogram,
-                    ["closedLoops"] = loops.Count,
+                    ["closedFaces"] = faceGroups.Count,
+                    ["closedLoops"] = pipe.ClosedLoops,
                     ["straightRuns"] = straightRuns,
                     ["jambCandidates"] = jambCandidates,
                     ["facePairs"] = pairsMade,
@@ -567,4 +577,5 @@ namespace RevitMCPCommandSet.Services.Dwg
         }
     }
 }
+
 

@@ -149,57 +149,67 @@ namespace RevitMCPCommandSet.Geometry
         internal static double[] P2(Pt p) { return new[] { Math.Round(p.X, 2), Math.Round(p.Y, 2) }; }
 
         /// <summary>
-        /// Full geometry pipeline over hatch-face boundary rings.
+        /// Full geometry pipeline over hatch faces. Each face is the complete
+        /// ring set of one hatch patch (outer ring plus interior hole rings);
+        /// holes matter: a point inside a hole is NOT inside the pochte
+        /// (chase/shaft cavities), which the pairing containment relies on.
         /// </summary>
-        public static PochePipelineResult RunPipeline(List<List<Pt>> loops, PochePipelineOptions opt)
+        public static PochePipelineResult RunPipeline(List<List<List<Pt>>> faces, PochePipelineOptions opt)
         {
-            if (loops == null) throw new ArgumentNullException("loops");
+            if (faces == null) throw new ArgumentNullException("faces");
             if (opt == null) throw new ArgumentNullException("opt");
-            var res = new PochePipelineResult { ClosedLoops = loops.Count };
+            var res = new PochePipelineResult { ClosedLoops = faces.Sum(f => f.Count) };
 
-            foreach (var vs in loops)
+            foreach (var face in faces)
             {
-                int n = vs.Count;
-                if (n < 3) continue;
-
-                // ---- straight runs: consecutive collinear edges ----
+                // ---- straight runs: consecutive collinear edges, collected
+                // across ALL rings of the face (outer ring + interior hole
+                // rings). A wall around a cavity typically pairs the outer
+                // ring's edge with the hole ring's edge - both belong to one
+                // face, so pairing operates on the face-combined run set.
                 var runs = new List<(Pt s, Pt e, double len)>();
-                int i = 0;
-                while (i < n)
+                foreach (var vs in face)
                 {
-                    Pt d0 = vs[(i + 1) % n] - vs[i];
-                    double L0 = d0.Len();
-                    if (L0 < 1e-9) { i++; continue; }
-                    Pt dirCur = d0 * (1.0 / L0);
-                    double lenCur = L0;
-                    int k = i;
-                    while (k + 1 < n)
+                    int n = vs.Count;
+                    if (n < 3) continue;
+
+                    int i = 0;
+                    while (i < n)
                     {
-                        Pt n0 = vs[k + 1], n1 = vs[(k + 2) % n];
-                        Pt dN = n1 - n0;
-                        double LN = dN.Len();
-                        if (LN < 1e-9) break;
-                        Pt uN = dN * (1.0 / LN);
-                        double dotAbs = Math.Abs(dirCur.Dot(uN));
-                        double angDev = Math.Acos(Math.Min(1.0, dotAbs)) * 180.0 / Math.PI;
-                        bool sameDir = angDev <= opt.RunAngleTolDeg;
-                        if (sameDir)
+                        Pt d0 = vs[(i + 1) % n] - vs[i];
+                        double L0 = d0.Len();
+                        if (L0 < 1e-9) { i++; continue; }
+                        Pt dirCur = d0 * (1.0 / L0);
+                        double lenCur = L0;
+                        int k = i;
+                        while (k + 1 < n)
                         {
-                            var vv = n0 - vs[i];
-                            var perp = vv - dirCur * vv.Dot(dirCur);
-                            if (perp.Len() > opt.RailTolFt) sameDir = false;
+                            Pt n0 = vs[k + 1], n1 = vs[(k + 2) % n];
+                            Pt dN = n1 - n0;
+                            double LN = dN.Len();
+                            if (LN < 1e-9) break;
+                            Pt uN = dN * (1.0 / LN);
+                            double dotAbs = Math.Abs(dirCur.Dot(uN));
+                            double angDev = Math.Acos(Math.Min(1.0, dotAbs)) * 180.0 / Math.PI;
+                            bool sameDir = angDev <= opt.RunAngleTolDeg;
+                            if (sameDir)
+                            {
+                                var vv = n0 - vs[i];
+                                var perp = vv - dirCur * vv.Dot(dirCur);
+                                if (perp.Len() > opt.RailTolFt) sameDir = false;
+                            }
+                            if (!sameDir) break;
+                            if (dirCur.Dot(uN) < 0) dirCur = new Pt(-dirCur.X, -dirCur.Y);
+                            lenCur += LN;
+                            k++;
                         }
-                        if (!sameDir) break;
-                        if (dirCur.Dot(uN) < 0) dirCur = new Pt(-dirCur.X, -dirCur.Y);
-                        lenCur += LN;
-                        k++;
+                        if (lenCur >= opt.MinRunFt)
+                        {
+                            runs.Add((vs[i], vs[(k + 1) % n], lenCur));
+                            res.StraightRuns++;
+                        }
+                        i = k + 1;
                     }
-                    if (lenCur >= opt.MinRunFt)
-                    {
-                        runs.Add((vs[i], vs[(k + 1) % n], lenCur));
-                        res.StraightRuns++;
-                    }
-                    i = k + 1;
                 }
 
                 // ---- jamb classification (sibling test) ----
@@ -313,7 +323,7 @@ namespace RevitMCPCommandSet.Geometry
                         var c1 = (pEnd + projE) * 0.5;
 
                         var mid = (c0 + c1) * 0.5;
-                        if (!InsideAnyPoche(mid, loops, opt.PocheProximityFt))
+                        if (!InsideAnyPocheFaces(mid, faces, opt.PocheProximityFt))
                         {
                             res.PairsOutsidePoche++;
                             res.RejectLog.Log("outsidePoche", new Dictionary<string, object>
@@ -355,7 +365,7 @@ namespace RevitMCPCommandSet.Geometry
             }
 
             // ---- independent collinear merge (with opening bridging) ----
-            res.Merged = MergeCollinear(res.CenterlinePieces, res.JambMidpoints, res.Bridge, opt, res.RejectLog, loops);
+            res.Merged = MergeCollinear(res.CenterlinePieces, res.JambMidpoints, res.Bridge, opt, res.RejectLog, faces);
             res.MergedAll = new List<WallPairCore>(res.Merged);
 
             // ---- pocket-door slot filter (nested sliver pairs) ----
@@ -392,7 +402,7 @@ namespace RevitMCPCommandSet.Geometry
             int extended = 0;
             if (opt.EnableEndExtension)
             {
-                res.Merged = ExtendEnds(res.Merged, opt, res.RejectLog, loops, out extended);
+                res.Merged = ExtendEnds(res.Merged, opt, res.RejectLog, faces, out extended);
             }
             res.ExtendsDone = extended;
 
@@ -416,7 +426,7 @@ namespace RevitMCPCommandSet.Geometry
         /// for evidence-gated bridging (gap midpoint inside a hatch patch).
         /// </summary>
         public static List<WallPairCore> MergeCollinear(List<double[]> pieces, List<Pt> jambMidpoints,
-            BridgeStatsCore stats, PochePipelineOptions opt, RejectLog rejects, List<List<Pt>> loops)
+            BridgeStatsCore stats, PochePipelineOptions opt, RejectLog rejects, List<List<List<Pt>>> faces)
         {
             var wallPairs = new List<WallPairCore>();
             var items = pieces
@@ -498,9 +508,9 @@ namespace RevitMCPCommandSet.Geometry
                 {
                     if (curRail.Count == 0) { railV = f[0]; curRail.Add(f); }
                     else if (Math.Abs(f[0] - railV) <= opt.RailTolFt) { curRail.Add(f); }
-                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, loops); railV = f[0]; curRail.Add(f); }
+                    else { FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, faces); railV = f[0]; curRail.Add(f); }
                 }
-                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, loops);
+                FlushRailWithBridge(curRail, railV, railsOut, am, cu, su, jambMidpoints, stats, opt, rejects, pieces, faces);
 
                 foreach (var r in railsOut)
                 {
@@ -528,7 +538,7 @@ namespace RevitMCPCommandSet.Geometry
         /// </summary>
         public static void FlushRailWithBridge(List<double[]> curRail, double railV, List<double[]> railsOut,
             double am, double cu, double su, List<Pt> jambMidpoints, BridgeStatsCore stats,
-            PochePipelineOptions opt, RejectLog rejects, List<double[]> allPieces, List<List<Pt>> loops)
+            PochePipelineOptions opt, RejectLog rejects, List<double[]> allPieces, List<List<List<Pt>>> faces)
         {
             if (curRail.Count == 0) return;
             curRail.Sort((a, b) => a[1].CompareTo(b[1]));
@@ -554,7 +564,7 @@ namespace RevitMCPCommandSet.Geometry
                 else if (opt.EnableJunctionEvidenceBridge &&
                          gap <= opt.MaxOpeningGapFt &&
                          Math.Abs(curRail[k][3] - thick) <= opt.BridgeThicknessTolFt &&
-                         HasJunctionEvidence(allPieces, loops, am, cu, su, railV, u1, f0, opt))
+                         HasJunctionEvidence(allPieces, faces, am, cu, su, railV, u1, f0, opt))
                 {
                     if (f1 > u1) u1 = f1;
                     if (curRail[k][3] > thick) thick = curRail[k][3];
@@ -587,7 +597,7 @@ namespace RevitMCPCommandSet.Geometry
         /// wall's own pochte). Door openings carry neither: hatches break at
         /// openings and no crossing wall passes through.
         /// </summary>
-        public static bool HasJunctionEvidence(List<double[]> allPieces, List<List<Pt>> loops,
+        public static bool HasJunctionEvidence(List<double[]> allPieces, List<List<List<Pt>>> faces,
             double am, double cu, double su, double railV, double gapStartU, double gapEndU, PochePipelineOptions opt)
         {
             if (allPieces != null)
@@ -613,11 +623,11 @@ namespace RevitMCPCommandSet.Geometry
                         return true;
                 }
             }
-            if (loops != null && loops.Count > 0)
+            if (faces != null && faces.Count > 0)
             {
                 double midU = (gapStartU + gapEndU) / 2.0;
                 var mid = new Pt(midU * cu - railV * su, midU * su + railV * cu);
-                if (InsideAnyPoche(mid, loops, opt.PocheProximityFt)) return true;
+                if (InsideAnyPocheFaces(mid, faces, opt.PocheProximityFt)) return true;
             }
             return false;
         }
@@ -656,24 +666,61 @@ namespace RevitMCPCommandSet.Geometry
             return false;
         }
 
+        /// <summary>
+        /// Face-aware pochte containment. Each face carries the complete ring
+        /// set of one hatch patch (outer ring plus interior hole rings). A
+        /// point is inside pochte when it lies within tolerance of any ring
+        /// edge (multi-wythe seam allowance), or when it falls inside an ODD
+        /// number of one face's rings - the even-odd rule makes interior
+        /// holes (chase/shaft cavities, pocket slots) count as empty space,
+        /// so pairs across a cavity fail containment instead of becoming
+        /// phantom walls.
+        /// </summary>
+        public static bool InsideAnyPocheFaces(Pt p, List<List<List<Pt>>> faces, double toleranceFt)
+        {
+            if (faces == null) return false;
+            foreach (var rings in faces)
+            {
+                if (rings == null || rings.Count == 0) continue;
+                int crossings = 0;
+                foreach (var poly in rings)
+                {
+                    if (poly == null || poly.Count < 3) continue;
+                    if (toleranceFt > 0 && PointNearEdge(poly, p, toleranceFt)) return true;
+                    if (PointInsidePoly(poly, p)) crossings++;
+                }
+                if ((crossings & 1) == 1) return true;
+            }
+            return false;
+        }
+
         private static bool PointNearOrInsidePoly(List<Pt> poly, Pt p, double toleranceFt)
         {
+            if (toleranceFt > 0 && PointNearEdge(poly, p, toleranceFt)) return true;
+            return PointInsidePoly(poly, p);
+        }
+
+        private static bool PointNearEdge(List<Pt> poly, Pt p, double toleranceFt)
+        {
             int n = poly.Count;
-            if (toleranceFt > 0)
+            for (int i = 0, j = n - 1; i < n; j = i++)
             {
-                for (int i = 0, j = n - 1; i < n; j = i++)
-                {
-                    var a = poly[i]; var b = poly[j];
-                    var ab = b - a;
-                    double L = ab.Len();
-                    if (L < 1e-9) continue;
-                    double t = (p - a).Dot(ab) / (L * L);
-                    if (t < 0.0 || t > 1.0) continue;
-                    var q = a + ab * t;
-                    if (p.Dist(q) <= toleranceFt) return true;
-                }
+                var a = poly[i]; var b = poly[j];
+                var ab = b - a;
+                double L = ab.Len();
+                if (L < 1e-9) continue;
+                double t = (p - a).Dot(ab) / (L * L);
+                if (t < 0.0 || t > 1.0) continue;
+                var q = a + ab * t;
+                if (p.Dist(q) <= toleranceFt) return true;
             }
+            return false;
+        }
+
+        private static bool PointInsidePoly(List<Pt> poly, Pt p)
+        {
             bool inside = false;
+            int n = poly.Count;
             for (int i = 0, j = n - 1; i < n; j = i++)
             {
                 var a = poly[i]; var b = poly[j];
@@ -925,7 +972,7 @@ namespace RevitMCPCommandSet.Geometry
         /// outward moves: ends never shorten.
         /// </summary>
         public static List<WallPairCore> ExtendEnds(List<WallPairCore> walls, PochePipelineOptions opt,
-            RejectLog rejects, List<List<Pt>> loops, out int extendedCount)
+            RejectLog rejects, List<List<List<Pt>>> faces, out int extendedCount)
         {
             extendedCount = 0;
             if (walls == null || walls.Count < 2) return walls;
@@ -974,14 +1021,14 @@ namespace RevitMCPCommandSet.Geometry
 
                         // the extension segment must lie inside the hatch:
                         // sample its quarter points.
-                        if (loops != null && loops.Count > 0)
+                        if (faces != null && faces.Count > 0)
                         {
                             bool inside = true;
                             for (int q = 1; q <= 3 && inside; q++)
                             {
                                 double f = t * q / 4.0;
                                 var sample = new Pt(endPt.X + outDir.X * f, endPt.Y + outDir.Y * f);
-                                if (!InsideAnyPoche(sample, loops, opt.ExtPocheTolFt)) inside = false;
+                                if (!InsideAnyPocheFaces(sample, faces, opt.ExtPocheTolFt)) inside = false;
                             }
                             if (!inside) continue;
                         }
@@ -1009,3 +1056,4 @@ namespace RevitMCPCommandSet.Geometry
         }
     }
 }
+

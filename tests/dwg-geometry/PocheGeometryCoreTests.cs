@@ -17,6 +17,18 @@ namespace RevitMCPCommandSet.Geometry.Tests
             foreach (var p in pts) l.Add(new Pt(p.x, p.y));
             return l;
         }
+
+        /// <summary>One hatch face carrying all rings (outer ring first, then holes).</summary>
+        public static List<List<List<Pt>>> Face(params List<Pt>[] rings)
+        {
+            return new List<List<List<Pt>>> { rings.ToList() };
+        }
+
+        /// <summary>Each ring is its own hatch face (separate patches).</summary>
+        public static List<List<List<Pt>>> Faces(params List<Pt>[] rings)
+        {
+            return rings.Select(r => new List<List<Pt>> { r }).ToList();
+        }
     }
 
     public class StraightBandTests
@@ -29,11 +41,8 @@ namespace RevitMCPCommandSet.Geometry.Tests
         [Test]
         public async Task CleanStraightBand_ProducesSingleWallThroughHatch()
         {
-            var loops = new List<List<Pt>>
-            {
-                RingHelpers.Ring((0, 10), (10, 10), (10, 11), (0, 11))
-            };
-            var res = PocheGeometryCore.RunPipeline(loops, Opt());
+            var faces = RingHelpers.Face(RingHelpers.Ring((0, 10), (10, 10), (10, 11), (0, 11)));
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
 
             await Assert.That(res.Merged.Count).IsEqualTo(1);
             var w = res.Merged[0];
@@ -52,8 +61,7 @@ namespace RevitMCPCommandSet.Geometry.Tests
             // centerline lies in the open cavity - containment culls them.
             var loop = RingHelpers.Ring(
                 (0, 0), (5, 0), (5, 6), (4, 6), (4, 1), (1, 1), (1, 6), (0, 6));
-            var loops = new List<List<Pt>> { loop };
-            var res = PocheGeometryCore.RunPipeline(loops, Opt(5.0));
+            var res = PocheGeometryCore.RunPipeline(RingHelpers.Face(loop), Opt(5.0));
 
             foreach (var w in res.Merged)
             {
@@ -75,12 +83,10 @@ namespace RevitMCPCommandSet.Geometry.Tests
             // is a full band-thickness run, so both sides have paired jamb
             // midpoints. Expect one bridged continuous wall.
             var bot = 10.0;
-            var loops = new List<List<Pt>>
-            {
+            var faces = RingHelpers.Faces(
                 RingHelpers.Ring((0, bot), (6, bot), (6, bot + 1), (0, bot + 1)),
-                RingHelpers.Ring((10, bot), (16, bot), (16, bot + 1), (10, bot + 1))
-            };
-            var res = PocheGeometryCore.RunPipeline(loops, Opt());
+                RingHelpers.Ring((10, bot), (16, bot), (16, bot + 1), (10, bot + 1)));
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
 
             await Assert.That(res.Merged.Count).IsEqualTo(1);
             await Assert.That(res.Merged[0].Length).IsGreaterThan(15.0);
@@ -102,13 +108,12 @@ namespace RevitMCPCommandSet.Geometry.Tests
         [Test]
         public async Task PocketSlot_StripsDoNotCreateWalls_BandSurvives()
         {
-            var loops = new List<List<Pt>>
-            {
-                RingHelpers.Ring((0, 0), (10, 0), (10, 1), (0, 1)),          // band outer
-                RingHelpers.Ring((2, 0.41), (6, 0.41), (6, 0.75), (2, 0.75))  // slot void (hole)
-            };
+            var faces = RingHelpers.Faces(
+                RingHelpers.Ring((0, 0), (10, 0), (10, 1), (0, 1)),          // band patch
+                RingHelpers.Ring((2, 0.41), (6, 0.41), (6, 0.75), (2, 0.75))  // slot void patch
+            );
 
-            var res = PocheGeometryCore.RunPipeline(loops, Opt());
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
 
             bool hasBand = res.Merged.Any(w =>
                 Math.Abs(w.Thickness - 1.0) < 0.05 && w.Length > 8.0);
@@ -122,6 +127,56 @@ namespace RevitMCPCommandSet.Geometry.Tests
         }
     }
 
+    // Interior holes in a hatch patch are empty space (chase/shaft cavities,
+    // pocket slots drawn as holes). Even-odd containment per face: pairs
+    // across a cavity fail pochte containment instead of becoming phantom
+    // walls. Regression: test.dwg chase at x 937-943, y 33.7-43.2 built two
+    // phantom walls across the cavity before the fix.
+    public class HoleContainmentTests
+    {
+        private static PochePipelineOptions Opt() => new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
+
+        [Test]
+        public async Task ChaseHole_PairsAcrossCavityAreRejected_BandWallsSurvive()
+        {
+            // Simplified chase anatomy: outer rectangle with an interior
+            // hole. Hatched bands: left wall (x 0-1.5), right wall (x 5-6.5),
+            // bottom (y 0-1.5), top (y 8.5-9). Cavity: x 1.5-5, y 1.5-8.5.
+            var outer = RingHelpers.Ring((0, 0), (6.5, 0), (6.5, 9), (0, 9));
+            var hole = RingHelpers.Ring((1.5, 1.5), (5, 1.5), (5, 8.5), (1.5, 8.5));
+            var faces = RingHelpers.Face(outer, hole);
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
+
+            // No wall may run across the cavity (midline inside the hole).
+            foreach (var w in res.Merged)
+            {
+                var mx = (w.Sx + w.Ex) / 2.0;
+                var my = (w.Sy + w.Ey) / 2.0;
+                bool acrossCavity = mx > 1.6 && mx < 4.9 && my > 1.6 && my < 8.4;
+                await Assert.That(acrossCavity).IsFalse();
+            }
+            await Assert.That(res.PairsOutsidePoche).IsGreaterThan(0);
+
+            // The four band walls (left, right, bottom, top) survive.
+            await Assert.That(res.Merged.Count).IsGreaterThanOrEqualTo(4);
+        }
+
+        [Test]
+        public async Task InsideAnyPocheFaces_HoleIsNotInside()
+        {
+            var outer = RingHelpers.Ring((0, 0), (6.5, 0), (6.5, 9), (0, 9));
+            var hole = RingHelpers.Ring((1.5, 1.5), (5, 1.5), (5, 8.5), (1.5, 8.5));
+            var faces = RingHelpers.Face(outer, hole);
+
+            // cavity center: inside the outer ring but inside the hole too -> even-odd says outside
+            await Assert.That(PocheGeometryCore.InsideAnyPocheFaces(new Pt(3.2, 5.0), faces, 0.05)).IsFalse();
+            // band center: inside outer only -> inside
+            await Assert.That(PocheGeometryCore.InsideAnyPocheFaces(new Pt(0.75, 5.0), faces, 0.05)).IsTrue();
+            // near the hole edge (seam allowance) -> inside
+            await Assert.That(PocheGeometryCore.InsideAnyPocheFaces(new Pt(1.5, 5.05), faces, 0.15)).IsTrue();
+        }
+    }
+
     public class InvariantTests
     {
         private static PochePipelineOptions Opt() => new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
@@ -129,20 +184,16 @@ namespace RevitMCPCommandSet.Geometry.Tests
         [Test]
         public async Task EverySurvivingWallMidlineLiesInsideHatch()
         {
-            var loops = new List<List<Pt>>
-            {
-                RingHelpers.Ring((0, 0), (20, 0), (20, 1), (0, 1)),
-                RingHelpers.Ring((14, 0.41), (18, 0.75), (18, 0.75), (14, 0.41))
-            };
+            var band = RingHelpers.Ring((0, 0), (20, 0), (20, 1), (0, 1));
             var slot = RingHelpers.Ring((14, 0.41), (18, 0.41), (18, 0.75), (14, 0.75));
-            var res = PocheGeometryCore.RunPipeline(new List<List<Pt>> { loops[0], slot }, Opt());
+            var faces = RingHelpers.Faces(band, slot);
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
 
             foreach (var w in res.Merged)
             {
                 var mx = (w.Sx + w.Ex) / 2.0;
                 var my = (w.Sy + w.Ey) / 2.0;
-                var inside = PocheGeometryCore.InsideAnyPoche(new Pt(mx, my),
-                    new List<List<Pt>> { loops[0], slot }, 0.06);
+                var inside = PocheGeometryCore.InsideAnyPocheFaces(new Pt(mx, my), faces, 0.06);
                 await Assert.That(inside).IsTrue();
             }
         }
@@ -151,11 +202,8 @@ namespace RevitMCPCommandSet.Geometry.Tests
         public async Task ReturnedWallTypeIsMonotonicByThickness()
         {
             // thickness must be in the [MinWallThicknessFt..MaxWallThicknessFt]
-            var loops = new List<List<Pt>>
-            {
-                RingHelpers.Ring((0, 0), (10, 0), (10, 1), (0, 1))
-            };
-            var res = PocheGeometryCore.RunPipeline(loops, Opt());
+            var faces = RingHelpers.Face(RingHelpers.Ring((0, 0), (10, 0), (10, 1), (0, 1)));
+            var res = PocheGeometryCore.RunPipeline(faces, Opt());
             foreach (var w in res.Merged)
             {
                 await Assert.That(w.Thickness).IsGreaterThanOrEqualTo(2.0 / 12.0);
@@ -484,14 +532,11 @@ namespace RevitMCPCommandSet.Geometry.Tests
         {
             var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
             // hatch patch covering the gap midpoint (6.75, 0)
-            var loops = new List<List<Pt>>
-            {
-                RingHelpers.Ring((6.0, -1.0), (7.5, -1.0), (7.5, 1.0), (6.0, 1.0))
-            };
+            var faces = RingHelpers.Face(RingHelpers.Ring((6.0, -1.0), (7.5, -1.0), (7.5, 1.0), (6.0, 1.0)));
             var railsOut = new List<double[]>();
             var stats = new BridgeStatsCore();
             PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
-                new List<Pt>(), stats, Opt(), null, null, loops);
+                new List<Pt>(), stats, Opt(), null, null, faces);
 
             await Assert.That(railsOut.Count).IsEqualTo(1);
             await Assert.That(railsOut[0][2]).IsEqualTo(11.5).Within(0.01);
