@@ -538,7 +538,10 @@ namespace RevitMCPCommandSet.Geometry.Tests
     {
         private static PochePipelineOptions Opt()
         {
-            var o = new PochePipelineOptions { MaxWallThicknessFt = 5.0 };
+            // pin the silent-merge gap low so these tests still reach the
+            // evidence branch (the production default chains up to 8ft
+            // silently and never consults evidence).
+            var o = new PochePipelineOptions { MaxWallThicknessFt = 5.0, MergeGapFt = 3.0 };
             o.EnableJunctionEvidenceBridge = true;
             return o;
         }
@@ -610,6 +613,52 @@ namespace RevitMCPCommandSet.Geometry.Tests
 
             await Assert.That(railsOut.Count).IsEqualTo(2);
             await Assert.That(stats.BridgedEvidence).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task ParallelWallThroughGap_BlocksTheBridge()
+        {
+            // West-wing shape: two same-rail pieces with a gap, and a separate
+            // PARALLEL wall whose band spans the gap midpoint (e.g. an
+            // adjacent wythe meeting end-to-end). Even with hatch evidence at
+            // the midpoint the gap must stay split - the parallel wall
+            // explains the gap, not a junction.
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 8.5, 11.5, 1.0 } };
+            var pieces = new List<double[]>
+            {
+                new[] { 6.0, 0.5, 8.0, 0.5, 1.0, 0 }    // parallel piece, rail v=0.5, spans gap midpoint u=6.75
+            };
+            var loops = RingHelpers.Face(RingHelpers.Ring((5.5, -1.0), (8.0, -1.0), (8.0, 1.0), (5.5, 1.0)));  // hatch at the gap midpoint
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, pieces, loops);
+
+            await Assert.That(railsOut.Count).IsEqualTo(2);
+            await Assert.That(stats.BridgedEvidence).IsEqualTo(0);
+        }
+
+        [Test]
+        public async Task JunctionStubAtGapEdge_BridgesDespiteEvidence()
+        {
+            // The double-T junction: two perpendicular stubs cross exactly at
+            // the gap edges (their rails meet the wall rail at the gap start
+            // and end). The chain must bridge - the wall is continuous in the
+            // hatch between the stubs.
+            var curRail = new List<double[]> { new[] { 0.0, 0.0, 5.0, 1.0 }, new[] { 0.0, 11.5, 15.0, 1.0 } };
+            var pieces = new List<double[]>
+            {
+                new[] { 5.0, 0.0, 5.0, 2.5, 0.6, 0 },     // stub crossing at the gap start (u=5)
+                new[] { 11.5, 0.0, 11.5, 2.5, 0.6, 0 }   // stub crossing at the gap end (u=11.5)
+            };
+            var railsOut = new List<double[]>();
+            var stats = new BridgeStatsCore();
+            PocheGeometryCore.FlushRailWithBridge(curRail, 0.0, railsOut, 0.0, 1.0, 0.0,
+                new List<Pt>(), stats, Opt(), null, pieces, null);
+
+            await Assert.That(railsOut.Count).IsEqualTo(1);
+            await Assert.That(railsOut[0][2]).IsEqualTo(15.0).Within(0.01);
+            await Assert.That(stats.BridgedEvidence).IsEqualTo(1);
         }
     }
 }

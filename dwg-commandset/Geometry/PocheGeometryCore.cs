@@ -77,7 +77,7 @@ namespace RevitMCPCommandSet.Geometry
         public double PairAngleTolDeg = 2.0;
         public double MinOverlapFrac = 0.7;
         public double ClusterAngleTolRad = 2.0 * Math.PI / 180.0;
-        public double MergeGapFt = 3.0;
+        public double MergeGapFt = 3.0;                 // silent same-rail chain gap (drafting slop); larger gaps need bridge evidence
         public double MaxOpeningGapFt = 8.0;
         public double BridgeThicknessTolFt = 0.05;
         public double JambPerpMinDeg = 60.0;
@@ -124,7 +124,7 @@ namespace RevitMCPCommandSet.Geometry
         // ---- bridge evidence beyond jamb runs ----
         public double BridgeCrossMaxDot = 0.35;       // crossing piece is near-perpendicular to the rail
         public double BridgeCrossSnapFt = 0.75;       // crossing point may sit past the gap edges by this much
-        public bool EnableJunctionEvidenceBridge = false; // A/B: evidence bridging merged noise-band fragments (run 6b precision loss)
+        public bool EnableJunctionEvidenceBridge = true;     // bridge gaps 3..8ft with junction evidence (crossing piece / hatch) minus parallel-occupancy block
         public bool EnableEndExtension = false;        // A/B: end extension was recall/precision neutral on test.dwg (run 6c/6d vs 6a); kept for drawings with rail-terminated conventions
     }
 
@@ -607,13 +607,18 @@ namespace RevitMCPCommandSet.Geometry
         /// Junction evidence for gap bridging beyond jamb runs: (a) a
         /// near-perpendicular piece whose rail crosses this rail inside the
         /// gap span (a crossing wall explains the face interruption), or (b)
-        /// the gap midpoint lies inside/near a hatch patch (the crossing
-        /// wall's own pochte). Door openings carry neither: hatches break at
-        /// openings and no crossing wall passes through.
+        /// the gap midpoint lies inside/near a hatch patch (the wall's band
+        /// continues through the gap). Door openings carry neither: hatches
+        /// break at openings and no crossing wall passes through.
+        /// A near-parallel piece whose band spans the gap midpoint BLOCKS
+        /// the bridge: the gap is then explained by an adjacent parallel
+        /// wall (a separate wall with its own band, e.g. wythes meeting
+        /// end-to-end), not by a junction crossing.
         /// </summary>
         public static bool HasJunctionEvidence(List<double[]> allPieces, List<List<List<Pt>>> faces,
             double am, double cu, double su, double railV, double gapStartU, double gapEndU, PochePipelineOptions opt)
         {
+            bool hasEvidence = false;
             if (allPieces != null)
             {
                 foreach (var p in allPieces)
@@ -623,7 +628,6 @@ namespace RevitMCPCommandSet.Geometry
                     if (pl < 1e-9) continue;
                     // piece direction in the cluster frame
                     double pu = (dx * cu + dy * su) / pl;
-                    double pv = (-dx * su + dy * cu) / pl;
                     if (Math.Abs(pu) > opt.BridgeCrossMaxDot) continue;   // near-perpendicular to the rail
                     // piece endpoints in the cluster frame
                     double uA = p[0] * cu + p[1] * su, vA = -p[0] * su + p[1] * cu;
@@ -634,16 +638,44 @@ namespace RevitMCPCommandSet.Geometry
                     double t = vB == vA ? 0.5 : (railV - vA) / (vB - vA);
                     double uCross = uA + (uB - uA) * t;
                     if (gapStartU - opt.BridgeCrossSnapFt <= uCross && uCross <= gapEndU + opt.BridgeCrossSnapFt)
-                        return true;
+                    {
+                        hasEvidence = true;
+                        break;
+                    }
                 }
             }
-            if (faces != null && faces.Count > 0)
+            if (!hasEvidence && faces != null && faces.Count > 0)
             {
                 double midU = (gapStartU + gapEndU) / 2.0;
                 var mid = new Pt(midU * cu - railV * su, midU * su + railV * cu);
-                if (InsideAnyPocheFaces(mid, faces, opt.PocheProximityFt)) return true;
+                if (InsideAnyPocheFaces(mid, faces, opt.PocheProximityFt)) hasEvidence = true;
             }
-            return false;
+            if (!hasEvidence) return false;
+
+            // Parallel-occupancy block: a near-parallel piece spanning the
+            // gap midpoint with its band covering this rail means a separate
+            // parallel wall occupies the gap - never bridge across it.
+            if (allPieces != null)
+            {
+                double midU = (gapStartU + gapEndU) / 2.0;
+                foreach (var p in allPieces)
+                {
+                    double dx = p[2] - p[0], dy = p[3] - p[1];
+                    double pl = Math.Sqrt(dx * dx + dy * dy);
+                    if (pl < 1e-9) continue;
+                    double pu = (dx * cu + dy * su) / pl;
+                    if (Math.Abs(pu) < opt.DedupAngleDot) continue;   // near-parallel to the rail
+                    double uA = p[0] * cu + p[1] * su, vA = -p[0] * su + p[1] * cu;
+                    double uB = p[2] * cu + p[3] * su, vB = -p[2] * su + p[3] * cu;
+                    double uLo = Math.Min(uA, uB), uHi = Math.Max(uA, uB);
+                    double vMid = (vA + vB) * 0.5;
+                    double halfBand = p[4] / 2.0 + opt.RailTolFt;
+                    if (midU < uLo - 0.05 || midU > uHi + 0.05) continue;                  // doesn't span the gap midpoint
+                    if (Math.Abs(railV - vMid) > halfBand + Math.Abs(vA - vB) * 0.5) continue;  // band doesn't cover this rail
+                    return false;
+                }
+            }
+            return true;
         }
 
         /// <summary>
