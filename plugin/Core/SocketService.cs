@@ -92,6 +92,20 @@ namespace revit_mcp_plugin.Core
                 _commandRegistry, _logger, configManager, _uiApp);
             commandManager.LoadCommands();
 
+            // 首次运行提示：命令默认禁用（用户主动启用设计）。
+            // First-run guidance: nothing is dispatchable until the user enables
+            // commands in Settings (check -> Save) - point them there.
+            var concreteRegistry = _commandRegistry as RevitCommandRegistry;
+            bool hasCommands = false;
+            if (concreteRegistry != null)
+            {
+                foreach (var name in concreteRegistry.GetRegisteredCommands()) { hasCommands = true; break; }
+            }
+            if (!hasCommands)
+            {
+                try { new FirstRunPromptWindow().Show(); } catch { }
+            }
+
             _logger.Info($"Socket service initialized on port {_port}");
         }
 
