@@ -79,10 +79,14 @@ jobs:
       # that the release zips are built from - without this step the
       # published zips would be missing DwgCommandSet/OffAxisCommandSet.
       # Mirrors installer/build-installer.ps1's auto-discovery loop.
+      # NOTE: these sets use Revit 2024+ APIs (Floor.SketchId, ElementId
+      # long values) and only compile for R24/R25/R26 - releases for
+      # Revit 2020-2023 ship the core command set only (same as the
+      # fork's own installer has always done).
       # ---------------------------------------------------------------
-      - name: Build standalone command sets
+      - name: Build standalone command sets (Revit 2024-2026)
         run: |
-          $configs = @('Release R20','Release R21','Release R22','Release R23','Release R24','Release R25','Release R26')
+          $configs = @('Release R24','Release R25','Release R26')
           $commandSets = Get-ChildItem -Directory -Filter '*-commandset'
           foreach ($config in $configs) {
             foreach ($set in $commandSets) {

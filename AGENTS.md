@@ -132,6 +132,6 @@ The original Roslyn `.csx` prototype scripts (detectors, fixers, spacing regular
 ## Build & Conventions
 
 - **Revit installed locally is 2024**; command sets build with `-c "Release R24"`.
-- Repo targets Revit 2020–2026 (R20–R26).
+- Repo targets Revit 2020–2026 (R20–R26) for the **core** set/plugin; the `dwg-commandset` / `offaxis-commandset` extras use Revit 2024+ APIs (`Floor.SketchId`, long ElementId values) and compile **only for R24/R25/R26** — release zips and the installer ship them for 2024–2026, core-only for 2020–2023.
 - Plugin side-loads command sets from `%APPDATA%\Autodesk\Revit\Addins\{year}\revit_mcp_plugin\Commands\{SetName}\{year}\*.dll`, discovered via `commandRegistry.json` + `Assembly.LoadFrom`.
 - **Commit only intentionally.** Don't push to upstream unless explicitly requested.
