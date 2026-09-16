@@ -124,7 +124,7 @@ namespace RevitMCPCommandSet.Geometry
         // ---- bridge evidence beyond jamb runs ----
         public double BridgeCrossMaxDot = 0.35;       // crossing piece is near-perpendicular to the rail
         public double BridgeCrossSnapFt = 0.75;       // crossing point may sit past the gap edges by this much
-        public bool EnableJunctionEvidenceBridge = true;     // bridge gaps 3..8ft with junction evidence (crossing piece / hatch) minus parallel-occupancy block
+        public bool EnableJunctionEvidenceBridge = false;    // A/B verdict: fixes T-junction continuity (run 11: recall +0.011) but chains noise-band fragments (precision -0.027, F1 -0.009); run 9 preferred on test.dwg - available for drawings that value continuity
         public bool EnableEndExtension = false;        // A/B: end extension was recall/precision neutral on test.dwg (run 6c/6d vs 6a); kept for drawings with rail-terminated conventions
     }
 
