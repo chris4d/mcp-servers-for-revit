@@ -64,12 +64,13 @@ Two packages are produced:
 
 The installer exposes a **Command Sets selection step** (pre-selects all) plus an AI-client config step.
 
-### Deployment Gotcha — Installer overwrites AI-client configs
+### Deployment Gotcha — Installer overwrites AI-client configs (RESOLVED as of v1.1.1)
 
-Running the installer re-runs `ConfigureClaudeDesktop` / `ConfigureCursor` / `ConfigureOpencode` in `[Code]`. Critically, `ConfigureOpencode` **overwrites `~/.config/opencode/opencode.json` back to `npx -y mcp-server-for-revit`** — the **broken npm package** that crashes on startup with `Cannot find module 'ajv'` (MCP error 32000). The published `mcp-server-for-revit@1.0.0` was never re-published with the `ajv: ^8.17.1` fix (user is not an npm owner; fix is local-only). So any reinstall breaks the opencode MCP connection until the config is pointed back at the local build:
+As of **v1.1.1** this gotcha is fixed in the installer: `installer/build-installer.ps1` bundles the compiled MCP server with the exe (`{app}\Server\build\index.js` + `node_modules`), and `ConfigureClaudeDesktop` / `ConfigureCursor` / `ConfigureOpencode` write client configs that run the bundled server via `node` — never `npx`. Install-time logic also **upgrades pre-existing `npx`-based entries** in those configs to the bundled-server form. The npm package `mcp-server-for-revit@1.0.0` remains broken upstream (unfixed `ajv` dep), and this fork deliberately never depends on it. Historical context for anyone reverting:
 
 ```jsonc
-// ~/.config/opencode/opencode.json — point at the LOCAL build
+// ~/.config/opencode/opencode.json — pre-v1.1.1 symptom was a forced npx entry
+// of the broken npm package; if you hit that state, point back at the local build:
 "mcp-server-for-revit": {
   "type": "local",
   "command": ["node", "C:\\dev\\mcp-servers-for-revit\\server\\build\\index.js"],

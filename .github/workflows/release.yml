@@ -74,6 +74,29 @@ jobs:
         run: dotnet build mcp-servers-for-revit.sln -c "Release R26"
 
       # ---------------------------------------------------------------
+      # Build standalone *-commandset projects (not in the sln). Their
+      # DeployCommandSet targets copy DLLs into the plugin AddIn layout
+      # that the release zips are built from - without this step the
+      # published zips would be missing DwgCommandSet/OffAxisCommandSet.
+      # Mirrors installer/build-installer.ps1's auto-discovery loop.
+      # ---------------------------------------------------------------
+      - name: Build standalone command sets
+        run: |
+          $configs = @('Release R20','Release R21','Release R22','Release R23','Release R24','Release R25','Release R26')
+          $commandSets = Get-ChildItem -Directory -Filter '*-commandset'
+          foreach ($config in $configs) {
+            foreach ($set in $commandSets) {
+              $csproj = Get-ChildItem $set.FullName -Filter '*.csproj' | Select-Object -First 1
+              if ($csproj) {
+                Write-Host "Building $($csproj.BaseName) ($config)"
+                dotnet build $csproj.FullName -c $config --verbosity minimal
+                if ($LASTEXITCODE -ne 0) { throw "command set build failed: $($csproj.BaseName) ($config)" }
+              }
+            }
+          }
+        shell: pwsh
+
+      # ---------------------------------------------------------------
       # Create Release Assets
       # The AddIn output already contains the complete deployable layout
       # (plugin + commandset) thanks to the DeployCommandSet build target.
@@ -104,6 +127,25 @@ jobs:
               Write-Host "Warning: AddIn output not found: $addinDir"
             }
           }
+        shell: pwsh
+
+      # ---------------------------------------------------------------
+      # MCP server bundle zip: prebuilt build/ + node_modules + package.json
+      # at the pinned tag. Suite installers (e.g. SMS-Toolkit) stage and
+      # hash-verify this instead of cloning and building from source.
+      # ---------------------------------------------------------------
+      - name: Bundle MCP server asset
+        run: |
+          $version = "${{ github.ref_name }}"
+          $stage = "release-assets/server-staging"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Recurse -Force "server/build" "$stage/build"
+          Copy-Item "server/package.json" $stage
+          Copy-Item -Recurse -Force "server/node_modules" "$stage/node_modules"
+          $zip = "release-assets/mcp-servers-for-revit-$version-server.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip
+          Remove-Item $stage -Recurse -Force
+          Write-Host "Created $zip"
         shell: pwsh
 
       # ---------------------------------------------------------------
