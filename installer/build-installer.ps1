@@ -124,6 +124,37 @@ $nItems = (Get-ChildItem $StagedServerDir -Recurse -File | Measure-Object).Count
 Write-Host "`nStaged MCP Server bundle: $nItems files under staged\Server" -ForegroundColor Green
 
 # ---------------------------------------------------------------
+# Step 2b-2: Stage a portable Node runtime (node.exe only) so the
+# client configs + AnythingLLM entries never depend on a system
+# Node install. Cached under .node-cache so only the first build
+# (or a version bump) pays the download cost.
+# ---------------------------------------------------------------
+$NodeMajor = "22"
+$NodeCacheDir = Join-Path $InstallerDir ".node-cache"
+$NodeCacheExe = Join-Path $NodeCacheDir "node.exe"
+if (-not (Test-Path $NodeCacheExe)) {
+    New-Item -ItemType Directory -Force $NodeCacheDir | Out-Null
+    $idx = (Invoke-WebRequest -UseBasicParsing "https://nodejs.org/dist/index.json").Content | ConvertFrom-Json
+    $ver = ($idx | Where-Object { $_.version -like "v$NodeMajor.*" } | Select-Object -First 1).version
+    if (-not $ver) { throw "no v$NodeMajor node release found on nodejs.org" }
+    $name = "node-$ver-win-x64"
+    $zipUrl = "https://nodejs.org/dist/$ver/$name.zip"
+    $zipTmp = Join-Path $env:TEMP "$name.zip"
+    $dirTmp = Join-Path $env:TEMP $name
+    Write-Host "Downloading portable $name"
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipTmp
+    if (Test-Path $dirTmp) { Remove-Item $dirTmp -Recurse -Force }
+    Expand-Archive -Path $zipTmp -DestinationPath $dirTmp -Force
+    Copy-Item (Join-Path $dirTmp "$name\node.exe") $NodeCacheExe -Force
+    Remove-Item $dirTmp, $zipTmp -Recurse -Force
+}
+$StagedNodeDir = Join-Path $StagedDir "node"
+if (Test-Path $StagedNodeDir) { Remove-Item $StagedNodeDir -Recurse -Force }
+New-Item -ItemType Directory -Force $StagedNodeDir | Out-Null
+Copy-Item $NodeCacheExe (Join-Path $StagedNodeDir "node.exe") -Force
+Write-Host "Staged portable node.exe -> $StagedNodeDir" -ForegroundColor Green
+
+# ---------------------------------------------------------------
 # Step 2b: Seed per-set registry fragments into each staged plugin tree
 # ---------------------------------------------------------------
 # The plugin's MCP dispatch is driven solely by Commands\commandRegistry.json.
@@ -213,6 +244,10 @@ foreach ($year in $builtVersions) {
 # Bundled MCP server runtime (runs locally; the npm package is stale/broken upstream)
 $issLines += 'Source: "staged\Server\*"; DestDir: "{app}\Server"; Flags: recursesubdirs ignoreversion'
 
+# Portable Node runtime + stdio launcher shim ({app}\node\node.exe -> run-mcp-server.cmd)
+$issLines += 'Source: "staged\node\node.exe"; DestDir: "{app}\node"; Flags: ignoreversion'
+$issLines += 'Source: "run-mcp-server.cmd"; DestDir: "{app}\Server"; Flags: ignoreversion'
+
 $issLines += ''
 $issLines += '[Icons]'
 $issLines += 'Name: "{group}\Uninstall MCP Servers for Revit"; Filename: "{uninstallexe}"'
@@ -257,12 +292,6 @@ $issLines += ''
 $issLines += 'function GetUserProfilePath: String;'
 $issLines += 'begin'
 $issLines += '  Result := GetEnv(''USERPROFILE'');'
-$issLines += 'end;'
-$issLines += ''
-$issLines += 'function IsNodeInstalled: Boolean;'
-$issLines += 'var RC: Integer;'
-$issLines += 'begin'
-$issLines += '  Result := Exec(''cmd'', ''/c node --version >nul 2>&1'', '''', SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);'
 $issLines += 'end;'
 $issLines += ''
 $issLines += 'function IsRevitInstalled(Y: String): Boolean;'
@@ -371,30 +400,26 @@ $issLines += '    end;'
 $issLines += '  end;'
 $issLines += 'end;'
 $issLines += ''
-$issLines += '// Path of the bundled server for this install, JSON-escaped (backslashes doubled).';
-$issLines += 'function ServerPathJson(): String;';
+$issLines += '// Path of the stdio launcher shim for this install, JSON-escaped (backslashes doubled).';
+$issLines += 'function ShimPathJson(): String;';
 $issLines += 'begin';
-$issLines += '  Result := ExpandConstant(''{app}\Server\build\index.js'');';
+$issLines += '  Result := ExpandConstant(''{app}\Server\run-mcp-server.cmd'');';
 $issLines += '  StringChangeEx(Result, ''\'', ''\\'', True);';
 $issLines += 'end;';
 $issLines += ''
 $issLines += 'procedure GetNodeEntry(var Entry: String);';
-$issLines += 'var SP: String;';
 $issLines += 'begin';
-$issLines += '  SP := ServerPathJson();';
 $issLines += '  Entry := ''"mcp-server-for-revit": {'' + #13#10';
-$issLines += '         + ''            "command": "node",'' + #13#10';
-$issLines += '         + ''            "args": ["'' + SP + ''"]'' + #13#10';
+$issLines += '         + ''            "command": "cmd",'' + #13#10';
+$issLines += '         + ''            "args": ["/c", "'' + ShimPathJson() + ''"]'' + #13#10';
 $issLines += '         + ''        }'';';
 $issLines += 'end;';
 $issLines += ''
 $issLines += 'procedure GetOpenCodeEntry(var Entry: String);';
-$issLines += 'var SP: String;';
 $issLines += 'begin';
-$issLines += '  SP := ServerPathJson();';
 $issLines += '  Entry := ''"mcp-server-for-revit": {'' + #13#10';
 $issLines += '         + ''            "type": "local",'' + #13#10';
-$issLines += '         + ''            "command": ["node", "'' + SP + ''"],'' + #13#10';
+$issLines += '         + ''            "command": ["cmd", "/c", "'' + ShimPathJson() + ''"],'' + #13#10';
 $issLines += '         + ''            "enabled": true'' + #13#10';
 $issLines += '         + ''        }'';';
 $issLines += 'end;';
@@ -416,11 +441,13 @@ $issLines += '    end;';
 $issLines += '  end;';
 $issLines += '  if E = 0 then Exit;';
 $issLines += '  Block := Copy(C, S, E - S + 1);';
-$issLines += '  if Pos(''npx'', Block) = 0 then Exit;';
+$issLines += '  // Upgrade stale entry forms: npx-based (upstream era) and direct "node"'
+$issLines += '  // launches (pre-bundled-runtime installs) both become shim-based.'
+$issLines += '  if (Pos(''npx'', Block) = 0) and (Pos(''run-mcp-server'', Block) > 0) then Exit;';
 $issLines += '  if OpenCodeStyle then GetOpenCodeEntry(Fresh) else GetNodeEntry(Fresh);';
 $issLines += '  Delete(C, S, E - S + 1);';
 $issLines += '  Insert(Fresh, C, S);';
-$issLines += '  Log(''Replaced npx server entry with bundled server'');';
+$issLines += '  Log(''Refreshed server entry to bundled-runtime shim'');';
 $issLines += 'end;';
 $issLines += ''
 $issLines += 'procedure ConfigureClaudeDesktop;'
@@ -434,8 +461,8 @@ $issLines += '    try'
 $issLines += '      SL.Add(''{'');'
 $issLines += '      SL.Add(''    "mcpServers": {'');'
 $issLines += '      SL.Add(''        "mcp-server-for-revit": {'');'
-$issLines += '      SL.Add(''            "command": "node",'');'
-$issLines += '      SL.Add(''            "args": ["'' + ServerPathJson() + ''"]'');'
+$issLines += '      SL.Add(''            "command": "cmd",'');'
+$issLines += '      SL.Add(''            "args": ["/c", "'' + ShimPathJson() + ''"]'');'
 $issLines += '      SL.Add(''        }'');'
 $issLines += '      SL.Add(''    }'');'
 $issLines += '      SL.Add(''}'');'
@@ -453,7 +480,7 @@ $issLines += '        SL.SaveToFile(P);'
 $issLines += '      Exit;'
 $issLines += '      end;'
 $issLines += '      StringChangeEx(C, ''"mcpServers": {'','
-$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "node",'' + #13#10 + ''            "args": ["'' + ServerPathJson() + ''"]'' + #13#10 + ''        },'', True);'
+$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "cmd",'' + #13#10 + ''            "args": ["/c", "'' + ShimPathJson() + ''"]'' + #13#10 + ''        },'', True);'
 $issLines += '      CleanTrailingCommas(C);'
 $issLines += '      SL.Text := C;'
 $issLines += '      SL.SaveToFile(P);'
@@ -493,8 +520,8 @@ $issLines += '    try'
 $issLines += '      SL.Add(''{'');'
 $issLines += '      SL.Add(''    "mcpServers": {'');'
 $issLines += '      SL.Add(''        "mcp-server-for-revit": {'');'
-$issLines += '      SL.Add(''            "command": "node"'');'
-$issLines += '      SL.Add(''            "args": ["'' + ServerPathJson() + ''"]'');'
+$issLines += '      SL.Add(''            "command": "cmd",'');'
+$issLines += '      SL.Add(''            "args": ["/c", "'' + ShimPathJson() + ''"]'');'
 $issLines += '      SL.Add(''        }'');'
 $issLines += '      SL.Add(''    }'');'
 $issLines += '      SL.Add(''}'');'
@@ -512,7 +539,7 @@ $issLines += '        SL.SaveToFile(P);'
 $issLines += '      Exit;'
 $issLines += '      end;'
 $issLines += '      StringChangeEx(C, ''"mcpServers": {'','
-$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "node",'' + #13#10 + ''            "args": ["'' + ServerPathJson() + ''"]'' + #13#10 + ''        },'', True);'
+$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "cmd",'' + #13#10 + ''            "args": ["/c", "'' + ShimPathJson() + ''"]'' + #13#10 + ''        },'', True);'
 $issLines += '      CleanTrailingCommas(C);'
 $issLines += '      SL.Text := C;'
 $issLines += '      SL.SaveToFile(P);'
@@ -552,8 +579,8 @@ $issLines += '    try'
 $issLines += '      SL.Add(''{'');'
 $issLines += '      SL.Add(''    "mcpServers": {'');'
 $issLines += '      SL.Add(''        "mcp-server-for-revit": {'');'
-$issLines += '      SL.Add(''            "command": "node",'');'
-$issLines += '      SL.Add(''            "args": ["'' + ServerPathJson() + ''"]'');'
+$issLines += '      SL.Add(''            "command": "cmd",'');'
+$issLines += '      SL.Add(''            "args": ["/c", "'' + ShimPathJson() + ''"]'');'
 $issLines += '      SL.Add(''        }'');'
 $issLines += '      SL.Add(''    }'');'
 $issLines += '      SL.Add(''}'');'
@@ -571,7 +598,7 @@ $issLines += '        SL.SaveToFile(P);'
 $issLines += '      Exit;'
 $issLines += '      end;'
 $issLines += '      StringChangeEx(C, ''"mcpServers": {'','
-$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "node",'' + #13#10 + ''            "args": ["'' + ServerPathJson() + ''"]'' + #13#10 + ''        },'', True);'
+$issLines += '        ''"mcpServers": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "command": "cmd",'' + #13#10 + ''            "args": ["/c", "'' + ShimPathJson() + ''"]'' + #13#10 + ''        },'', True);'
 $issLines += '      CleanTrailingCommas(C);'
 $issLines += '      SL.Text := C;'
 $issLines += '      SL.SaveToFile(P);'
@@ -613,7 +640,7 @@ $issLines += '      SL.Add(''    "$schema": "https://opencode.ai/config.json",''
 $issLines += '      SL.Add(''    "mcp": {'');'
 $issLines += '      SL.Add(''        "mcp-server-for-revit": {'');'
 $issLines += '      SL.Add(''            "type": "local",'');'
-$issLines += '      SL.Add(''            "command": ["node", "'' + ServerPathJson() + ''"],'');'
+$issLines += '      SL.Add(''            "command": ["cmd", "/c", "'' + ShimPathJson() + ''"],'');'
 $issLines += '      SL.Add(''            "enabled": true'');'
 $issLines += '      SL.Add(''        }'');'
 $issLines += '      SL.Add(''    }'');'
@@ -632,7 +659,7 @@ $issLines += '        SL.SaveToFile(P);'
 $issLines += '      Exit;'
 $issLines += '      end;'
 $issLines += '      StringChangeEx(C, ''"mcp": {'','
-$issLines += '        ''"mcp": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "type": "local",'' + #13#10 + ''            "command": ["node", "'' + ServerPathJson() + ''"],'' + #13#10 + ''            "enabled": true'' + #13#10 + ''        },'', True);'
+$issLines += '        ''"mcp": {'' + #13#10 + ''        "mcp-server-for-revit": {'' + #13#10 + ''            "type": "local",'' + #13#10 + ''            "command": ["cmd", "/c", "'' + ShimPathJson() + ''"],'' + #13#10 + ''            "enabled": true'' + #13#10 + ''        },'', True);'
 $issLines += '      CleanTrailingCommas(C);'
 $issLines += '      SL.Text := C;'
 $issLines += '      SL.SaveToFile(P);'
@@ -730,18 +757,8 @@ $issLines += '  CreateClientPage;'
 $issLines += 'end;'
 $issLines += ''
 $issLines += 'function NextButtonClick(Page: Integer): Boolean;'
-$issLines += 'var M: String;'
 $issLines += 'begin'
 $issLines += '  Result := True;'
-$issLines += '  if Page = wpReady then begin'
-$issLines += '    if not IsNodeInstalled then begin'
-$issLines += '      M := ''Node.js is required but not found.'' + #13#10 + #13#10'
-$issLines += '        + ''Install Node.js 20+ from https://nodejs.org/'' + #13#10 + #13#10'
-$issLines += '        + ''The plugin will install but AI features won''''t work.'' + #13#10 + #13#10'
-$issLines += '        + ''Continue anyway?'';'
-$issLines += '      if MsgBox(M, mbInformation, MB_YESNO) = IDNO then Result := False;'
-$issLines += '    end;'
-$issLines += '  end;'
 $issLines += 'end;'
 $issLines += ''
 $issLines += 'procedure ConfigureDetectedClients;'

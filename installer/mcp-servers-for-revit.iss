@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.1.2
+AppVersion=1.1.3
 AppPublisher=MCP Servers for Revit
 AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
@@ -23,6 +23,8 @@ Source: "staged\2024\*"; DestDir: "{app}\RevitPlugins\2024"; Flags: recursesubdi
 Source: "staged\2025\*"; DestDir: "{app}\RevitPlugins\2025"; Flags: recursesubdirs ignoreversion
 Source: "staged\2026\*"; DestDir: "{app}\RevitPlugins\2026"; Flags: recursesubdirs ignoreversion
 Source: "staged\Server\*"; DestDir: "{app}\Server"; Flags: recursesubdirs ignoreversion
+Source: "staged\node\node.exe"; DestDir: "{app}\node"; Flags: ignoreversion
+Source: "run-mcp-server.cmd"; DestDir: "{app}\Server"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Uninstall MCP Servers for Revit"; Filename: "{uninstallexe}"
@@ -48,12 +50,6 @@ end;
 function GetUserProfilePath: String;
 begin
   Result := GetEnv('USERPROFILE');
-end;
-
-function IsNodeInstalled: Boolean;
-var RC: Integer;
-begin
-  Result := Exec('cmd', '/c node --version >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);
 end;
 
 function IsRevitInstalled(Y: String): Boolean;
@@ -162,30 +158,26 @@ begin
   end;
 end;
 
-// Path of the bundled server for this install, JSON-escaped (backslashes doubled).
-function ServerPathJson(): String;
+// Path of the stdio launcher shim for this install, JSON-escaped (backslashes doubled).
+function ShimPathJson(): String;
 begin
-  Result := ExpandConstant('{app}\Server\build\index.js');
+  Result := ExpandConstant('{app}\Server\run-mcp-server.cmd');
   StringChangeEx(Result, '\', '\\', True);
 end;
 
 procedure GetNodeEntry(var Entry: String);
-var SP: String;
 begin
-  SP := ServerPathJson();
   Entry := '"mcp-server-for-revit": {' + #13#10
-         + '            "command": "node",' + #13#10
-         + '            "args": ["' + SP + '"]' + #13#10
+         + '            "command": "cmd",' + #13#10
+         + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10
          + '        }';
 end;
 
 procedure GetOpenCodeEntry(var Entry: String);
-var SP: String;
 begin
-  SP := ServerPathJson();
   Entry := '"mcp-server-for-revit": {' + #13#10
          + '            "type": "local",' + #13#10
-         + '            "command": ["node", "' + SP + '"],' + #13#10
+         + '            "command": ["cmd", "/c", "' + ShimPathJson() + '"],' + #13#10
          + '            "enabled": true' + #13#10
          + '        }';
 end;
@@ -207,11 +199,13 @@ begin
   end;
   if E = 0 then Exit;
   Block := Copy(C, S, E - S + 1);
-  if Pos('npx', Block) = 0 then Exit;
+  // Upgrade stale entry forms: npx-based (upstream era) and direct "node"
+  // launches (pre-bundled-runtime installs) both become shim-based.
+  if (Pos('npx', Block) = 0) and (Pos('run-mcp-server', Block) > 0) then Exit;
   if OpenCodeStyle then GetOpenCodeEntry(Fresh) else GetNodeEntry(Fresh);
   Delete(C, S, E - S + 1);
   Insert(Fresh, C, S);
-  Log('Replaced npx server entry with bundled server');
+  Log('Refreshed server entry to bundled-runtime shim');
 end;
 
 procedure ConfigureClaudeDesktop;
@@ -225,8 +219,8 @@ begin
       SL.Add('{');
       SL.Add('    "mcpServers": {');
       SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "command": "node",');
-      SL.Add('            "args": ["' + ServerPathJson() + '"]');
+      SL.Add('            "command": "cmd",');
+      SL.Add('            "args": ["/c", "' + ShimPathJson() + '"]');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -244,7 +238,7 @@ begin
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
-        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -284,8 +278,8 @@ begin
       SL.Add('{');
       SL.Add('    "mcpServers": {');
       SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "command": "node"');
-      SL.Add('            "args": ["' + ServerPathJson() + '"]');
+      SL.Add('            "command": "cmd",');
+      SL.Add('            "args": ["/c", "' + ShimPathJson() + '"]');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -303,7 +297,7 @@ begin
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
-        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -343,8 +337,8 @@ begin
       SL.Add('{');
       SL.Add('    "mcpServers": {');
       SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "command": "node",');
-      SL.Add('            "args": ["' + ServerPathJson() + '"]');
+      SL.Add('            "command": "cmd",');
+      SL.Add('            "args": ["/c", "' + ShimPathJson() + '"]');
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
@@ -362,7 +356,7 @@ begin
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
-        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "node",' + #13#10 + '            "args": ["' + ServerPathJson() + '"]' + #13#10 + '        },', True);
+        '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -404,7 +398,7 @@ begin
       SL.Add('    "mcp": {');
       SL.Add('        "mcp-server-for-revit": {');
       SL.Add('            "type": "local",');
-      SL.Add('            "command": ["node", "' + ServerPathJson() + '"],');
+      SL.Add('            "command": ["cmd", "/c", "' + ShimPathJson() + '"],');
       SL.Add('            "enabled": true');
       SL.Add('        }');
       SL.Add('    }');
@@ -423,7 +417,7 @@ begin
       Exit;
       end;
       StringChangeEx(C, '"mcp": {',
-        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["node", "' + ServerPathJson() + '"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
+        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["cmd", "/c", "' + ShimPathJson() + '"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
       CleanTrailingCommas(C);
       SL.Text := C;
       SL.SaveToFile(P);
@@ -521,18 +515,8 @@ begin
 end;
 
 function NextButtonClick(Page: Integer): Boolean;
-var M: String;
 begin
   Result := True;
-  if Page = wpReady then begin
-    if not IsNodeInstalled then begin
-      M := 'Node.js is required but not found.' + #13#10 + #13#10
-        + 'Install Node.js 20+ from https://nodejs.org/' + #13#10 + #13#10
-        + 'The plugin will install but AI features won''t work.' + #13#10 + #13#10
-        + 'Continue anyway?';
-      if MsgBox(M, mbInformation, MB_YESNO) = IDNO then Result := False;
-    end;
-  end;
 end;
 
 procedure ConfigureDetectedClients;

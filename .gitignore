@@ -382,3 +382,5 @@ installer/staged/
 # Inno Setup staging + built installer output
 installer/staged/
 installer/output/
+# portable node.exe download cache for installer staging (build-installer.ps1)
+installer/.node-cache/
