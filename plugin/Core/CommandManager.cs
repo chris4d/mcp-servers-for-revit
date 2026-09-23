@@ -93,6 +93,62 @@ namespace revit_mcp_plugin.Core
         }
 
         /// <summary>
+        /// <para>Hot reload: re-registers commands from assemblies whose file
+        /// name contains fileNameFilter (null = all assemblies). Command
+        /// instances are recreated and ReplaceCommand in the registry
+        /// overwrites the old entries by CommandName.</para>
+        /// </summary>
+        public int ReloadCommands(string fileNameFilter)
+        {
+            int reloaded = 0;
+            string currentVersion = _versionAdapter.GetRevitVersion();
+            foreach (var commandConfig in _configManager.Config.Commands)
+            {
+                try
+                {
+                    if (!commandConfig.Enabled) continue;
+
+                    if (commandConfig.SupportedRevitVersions != null &&
+                        commandConfig.SupportedRevitVersions.Length > 0 &&
+                        !_versionAdapter.IsVersionSupported(commandConfig.SupportedRevitVersions))
+                        continue;
+
+                    string path = commandConfig.AssemblyPath.Contains("{VERSION}")
+                        ? commandConfig.AssemblyPath.Replace("{VERSION}", currentVersion)
+                        : commandConfig.AssemblyPath;
+                    commandConfig.AssemblyPath = path; // in-place, matches LoadCommands behavior
+                    if (!Path.IsPathRooted(path))
+                    {
+                        string baseDir = PathManager.GetCommandsDirectoryPath();
+                        path = Path.Combine(baseDir, path);
+                    }
+                    string fileName = Path.GetFileName(path);
+                    if (fileNameFilter != null &&
+                        fileName.IndexOf(fileNameFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                    if (!File.Exists(path))
+                        continue;
+                    if (string.Equals(fileName, "RevitMCPCommandSet.dll", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.Warning("RevitMCPCommandSet is LoadFrom-resident; restart Revit to reload it.");
+                        continue;
+                    }
+
+                    CommandSetLoader.Invalidate(path);
+                    LoadCommandFromAssembly(commandConfig);
+                    reloaded++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error("Hot reload of {0} failed: {1}",
+                        commandConfig.CommandName, ex.Message);
+                }
+            }
+            _logger.Info("Hot reload complete: {0} command configs reprocessed.", reloaded);
+            return reloaded;
+        }
+
+        /// <summary>
         /// Loads specific commands in specific assemblies.
         /// </summary>
         /// <param name="config">Configuration class describing the command.</param>
@@ -118,9 +174,21 @@ namespace revit_mcp_plugin.Core
 
                 bool matched = false;
 
-                // Load assembly.
-                // Load assembly.
-                Assembly assembly = Assembly.LoadFrom(assemblyPath);
+                // The dynamic-code host (RevitMCPCommandSet) loads via LoadFrom so
+                // its Roslyn chain resolves by sibling probing (byte loads lose the
+                // dependency-location context and end up on Revit's own old
+                // System.Collections.Immutable, which lacks ImmutableCollectionsMarshal).
+                // All other command sets keep the byte-load live-reload capability and
+                // their files never lock.
+                Assembly assembly;
+                if (string.Equals(Path.GetFileName(assemblyPath), "RevitMCPCommandSet.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    assembly = Assembly.LoadFrom(assemblyPath);
+                }
+                else
+                {
+                    assembly = CommandSetLoader.Resolve(assemblyPath, _logger);
+                }
 
                 // Track command names actually exposed by the DLL to surface name drift.
                 // Track command names actually exposed by the DLL to surface name drift.

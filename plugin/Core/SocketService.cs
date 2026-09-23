@@ -25,6 +25,17 @@ namespace revit_mcp_plugin.Core
         private ICommandRegistry _commandRegistry;
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
+        private CommandManager _pluginCommandManager;
+        private revit_mcp_plugin.Configuration.ConfigurationManager _pluginConfigManager;
+
+        /// <summary>Command manager instance that LoadCommands/hot-reload uses (set at Initialize).</summary>
+        public CommandManager PluginCommandManager { get { return _pluginCommandManager; } }
+
+        /// <summary>Plugin configuration manager (set at Initialize).</summary>
+        public revit_mcp_plugin.Configuration.ConfigurationManager PluginConfigManager { get { return _pluginConfigManager; } }
+
+        /// <summary>The shared command registry used by the executor.</summary>
+        public ICommandRegistry PluginCommandRegistry { get { return _commandRegistry; } }
 
         public static SocketService Instance
         {
@@ -86,9 +97,17 @@ namespace revit_mcp_plugin.Core
 
             // Load command.
             // Load command.
+            CommandSetLoader.EnsureResolveHook(PathManager.GetCommandsDirectoryPath());
+
             CommandManager commandManager = new CommandManager(
                 _commandRegistry, _logger, configManager, _uiApp);
             commandManager.LoadCommands();
+            _pluginCommandManager = commandManager;
+            _pluginConfigManager = configManager;
+
+            // 注册插件内置命令（热重载入口）
+            // Register plugin built-ins (hot reload entry point).
+            _commandRegistry.RegisterCommand(new revit_mcp_plugin.Commands.ReloadCommandSetsCommand(_uiApp));
 
             // First-run guidance: nothing is dispatchable until the user enables
             // commands in Settings (check -> Save) - point them there.

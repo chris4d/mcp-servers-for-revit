@@ -9,6 +9,15 @@ mcp-servers-for-revit enables AI clients like Claude, Cline, and other MCP-compa
 > [!NOTE]
 > This is a fork of the original [revit-mcp](https://github.com/mcp-servers-for-revit/revit-mcp) project with additional tools and functionality improvements.
 
+## What this fork adds
+
+- **Off-axis geometry repair**: detect and snap near-axis lines (walls, beams, grids, reference planes, sketches, model lines) back to their nearest 0°/45°/90°/135° axis, plus a 1/4"-lattice spacing regularizer.
+- **DWG-driven modeling**: generate walls, grids, and model lines from imported/linked DWG linework and hatch fills (`create_walls_from_dwg_poche` etc.).
+- **Live command-set reload**: hot-swap command set DLLs during development without restarting Revit.
+- **Windows installer** (Inno Setup) that installs the add-in, command sets, and a bundled MCP server, and configures Claude Desktop / Cursor / opencode / AnythingLLM.
+
+Full history: [CHANGELOG.md](./CHANGELOG.md).
+
 ## Architecture
 
 ```mermaid
