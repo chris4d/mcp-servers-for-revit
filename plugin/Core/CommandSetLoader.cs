@@ -144,7 +144,7 @@ namespace revit_mcp_plugin.Core
             var bytes = File.ReadAllBytes(assemblyPath);
             var assembly = Assembly.Load(bytes);
             Cache[assemblyPath] = Tuple.Create(assembly, hash);
-            logger?.Info("程序集字节加载 (热重载): {0} [{1}]\nAssembly byte-loaded (hot reload): {0} [{1}]",
+            logger?.Info("Assembly byte-loaded (hot reload): {0} [{1}]",
                 Path.GetFileName(assemblyPath), hash.Substring(0, 8));
             return assembly;
         }

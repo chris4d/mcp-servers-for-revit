@@ -105,7 +105,6 @@ namespace revit_mcp_plugin.Core
             _pluginCommandManager = commandManager;
             _pluginConfigManager = configManager;
 
-            // 注册插件内置命令（热重载入口）
             // Register plugin built-ins (hot reload entry point).
             _commandRegistry.RegisterCommand(new revit_mcp_plugin.Commands.ReloadCommandSetsCommand(_uiApp));
 
