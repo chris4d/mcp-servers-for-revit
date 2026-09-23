@@ -11,12 +11,12 @@ namespace RevitMCPCommandSet.Commands
         private CreateLineElementEventHandler _handler => (CreateLineElementEventHandler)Handler;
 
         /// <summary>
-        /// 命令名称
+        /// Command name
         /// </summary>
         public override string CommandName => "create_line_based_element";
 
         /// <summary>
-        /// 构造函数
+        /// Constructor
         /// </summary>
         /// <param name="uiApp">Revit UIApplication</param>
         public CreateLineElementCommand(UIApplication uiApp)
@@ -29,15 +29,15 @@ namespace RevitMCPCommandSet.Commands
             try
             {
                 List<LineElement> data = new List<LineElement>();
-                // 解析参数
+                // Parse parameters
                 data = parameters["data"].ToObject<List<LineElement>>();
                 if (data == null)
                     throw new ArgumentNullException(nameof(data), "AI传入数据为空");
 
-                // 设置线状构件体参数
+                // Set the line-based element parameters
                 _handler.SetParameters(data);
 
-                // 触发外部事件并等待完成
+                // Raise the external event and wait for completion
                 if (RaiseAndWaitForCompletion(10000))
                 {
                     return _handler.Result;

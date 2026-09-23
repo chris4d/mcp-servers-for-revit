@@ -29,13 +29,13 @@ namespace RevitMCPCommandSet.Commands.Access
             {
                 try
                 {
-                    // 解析参数
+                    // Parse parameters
                     int? limit = parameters?["limit"]?.Value<int>();
 
-                    // 设置数量限制
+                    // Set the count limit
                     _handler.Limit = limit;
 
-                    // 触发外部事件并等待完成
+                    // Raise the external event and wait for completion
                     if (RaiseAndWaitForCompletion(15000))
                     {
                         return _handler.ResultElements;

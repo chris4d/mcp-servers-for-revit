@@ -10,12 +10,12 @@ namespace RevitMCPCommandSet.Commands
         private TagWallsEventHandler _handler => (TagWallsEventHandler)Handler;
 
         /// <summary>
-        /// 命令名称
+        /// Command name
         /// </summary>
         public override string CommandName => "tag_walls";
 
         /// <summary>
-        /// 构造函数
+        /// Constructor
         /// </summary>
         /// <param name="uiApp">Revit UIApplication</param>
         public TagWallsCommand(UIApplication uiApp)
@@ -27,7 +27,7 @@ namespace RevitMCPCommandSet.Commands
         {
             try
             {
-                // 解析参数
+                // Parse parameters
                 bool useLeader = false;
                 if (parameters["useLeader"] != null)
                 {
@@ -40,10 +40,10 @@ namespace RevitMCPCommandSet.Commands
                     tagTypeId = parameters["tagTypeId"].ToString();
                 }
 
-                // 设置标记参数
+                // Set the tagging parameters
                 _handler.SetParameters(useLeader, tagTypeId);
 
-                // 触发外部事件并等待完成
+                // Raise the external event and wait for completion
                 if (RaiseAndWaitForCompletion(10000))
                 {
                     return _handler.TaggingResults;

@@ -23,17 +23,17 @@ namespace RevitMCPCommandSet.Commands.Access
             {
                 try
                 {
-                    // 解析参数
+                    // Parse parameters
                     List<string> categoryList = parameters?["categoryList"]?.ToObject<List<string>>() ?? new List<string>();
                     string familyNameFilter = parameters?["familyNameFilter"]?.Value<string>();
                     int? limit = parameters?["limit"]?.Value<int>();
 
-                    // 设置查询参数
+                    // Set query parameters
                     _handler.CategoryList = categoryList;
                     _handler.FamilyNameFilter = familyNameFilter;
                     _handler.Limit = limit;
 
-                    // 触发外部事件并等待完成，最多等待15秒
+                    // Raise the external event and wait for completion, up to 15 seconds
                     if (RaiseAndWaitForCompletion(15000))
                     {
                         return _handler.ResultFamilyTypes;
