@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.1.3
+AppVersion=1.1.6
 AppPublisher=MCP Servers for Revit
 AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
@@ -19,6 +19,10 @@ PrivilegesRequiredOverridesAllowed=dialog
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
+Source: "staged\2020\*"; DestDir: "{app}\RevitPlugins\2020"; Flags: recursesubdirs ignoreversion
+Source: "staged\2021\*"; DestDir: "{app}\RevitPlugins\2021"; Flags: recursesubdirs ignoreversion
+Source: "staged\2022\*"; DestDir: "{app}\RevitPlugins\2022"; Flags: recursesubdirs ignoreversion
+Source: "staged\2023\*"; DestDir: "{app}\RevitPlugins\2023"; Flags: recursesubdirs ignoreversion
 Source: "staged\2024\*"; DestDir: "{app}\RevitPlugins\2024"; Flags: recursesubdirs ignoreversion
 Source: "staged\2025\*"; DestDir: "{app}\RevitPlugins\2025"; Flags: recursesubdirs ignoreversion
 Source: "staged\2026\*"; DestDir: "{app}\RevitPlugins\2026"; Flags: recursesubdirs ignoreversion
@@ -460,8 +464,8 @@ begin
   SetLabel.Font.Style := [fsBold];
 
   Names[0] := 'DwgCommandSet';
-  Names[1] := 'OffAxisCommandSet';
-  Names[2] := 'RevitMCPCommandSet';
+  Names[1] := 'RevitMCPCommandSet';
+  Names[2] := 'OffAxisCommandSet';
 
   for I := 0 to High(SetCBs) do begin
     SetCBs[I] := TNewCheckBox.Create(WizardForm);
@@ -531,6 +535,10 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var AnyChecked: Boolean;
 begin
   if CurStep = ssPostInstall then begin
+    if IsRevitInstalled('2020') then CopyToRevitAddins('2020');
+    if IsRevitInstalled('2021') then CopyToRevitAddins('2021');
+    if IsRevitInstalled('2022') then CopyToRevitAddins('2022');
+    if IsRevitInstalled('2023') then CopyToRevitAddins('2023');
     if IsRevitInstalled('2024') then CopyToRevitAddins('2024');
     if IsRevitInstalled('2025') then CopyToRevitAddins('2025');
     if IsRevitInstalled('2026') then CopyToRevitAddins('2026');
