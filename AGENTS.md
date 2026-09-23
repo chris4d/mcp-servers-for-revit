@@ -122,6 +122,7 @@ The following learnings were hard-won during development and remain authoritativ
 - Report exact counts: **Fixed**, **Skipped (reason)**, and **LargeFix**; flag constraint-locked (dimensioned/curtain-wall-hosted) elements that rolled back safely.
 - When dispatching to the compiled tools, pass `elementIds`/`hostIds`/`lineIds` as JSON arrays or CSV strings. For spacing passes use 10–12 IDs per call; all warnings/errors are handled headlessly by the `FailuresProcessing` delegate.
 - Always set `transactionMode: "none"` when a script/command manages its own transactions.
+- `send_code_to_revit` contract: the snippet runs inside `Execute(Document document, object[] parameters)` — use lowercase `document`, return with `return ...`, length-like values are in internal **feet**. Compile-error line numbers are 1-based snippet-relative (requires this repo's commandset build, branch `feature/send-code-contract-guidance`). Failure results are labeled `"Code failed to execute."` instead of a success envelope. A companion global opencode skill `revit-code-execution` (in the user's `~/.config/opencode/skills/`) carries the durable API lessons for agents.
 
 ---
 

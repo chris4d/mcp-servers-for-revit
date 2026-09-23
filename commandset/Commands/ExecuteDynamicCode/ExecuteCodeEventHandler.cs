@@ -139,10 +139,22 @@ namespace AIGeneratedCode
                 // 处理编译结果
                 if (!result.Success)
                 {
+                    // Number of wrapper header lines preceding the first user-code line
+                    // (usings + namespace/class/Execute-sig braces + entry comment).
+                    const int wrapperHeaderLineCount = 13;
+
                     var errors = string.Join("\n", result.Diagnostics
                         .Where(d => d.Severity == DiagnosticSeverity.Error)
-                        .Select(d => $"Line {d.Location.GetLineSpan().StartLinePosition.Line}: {d.GetMessage()}"));
-                    throw new Exception($"代码编译错误:\n{errors}");
+                        .Select(d =>
+                        {
+                            int wrappedLine = d.Location.GetLineSpan().StartLinePosition.Line;
+                            int snippetLine = wrappedLine - wrapperHeaderLineCount + 1;
+                            string loc = snippetLine >= 1
+                                ? $"Line {snippetLine}"
+                                : $"Wrapper line {wrappedLine + 1}";
+                            return $"{loc}: {d.GetMessage()}";
+                        }));
+                    throw new Exception($"代码编译错误 (line numbers refer to your submitted code, 1-based):\n{errors}");
                 }
 
                 // 反射调用执行方法

@@ -1,6 +1,6 @@
 {
     "name": "mcp-server-for-revit",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "description": "MCP server for interacting with Autodesk Revit through AI assistants like Claude",
     "main": "index.js",
     "type": "module",
@@ -59,3 +59,4 @@
         "better-sqlite3@12.11.1": true
     }
 }
+
