@@ -32,7 +32,7 @@ namespace RevitMCPCommandSet.Commands
                 // Parse parameters
                 data = parameters["data"].ToObject<List<LineElement>>();
                 if (data == null)
-                    throw new ArgumentNullException(nameof(data), "AI传入数据为空");
+                    throw new ArgumentNullException(nameof(data), "AI input data is null");
 
                 // Set the line-based element parameters
                 _handler.SetParameters(data);
@@ -44,12 +44,12 @@ namespace RevitMCPCommandSet.Commands
                 }
                 else
                 {
-                    throw new TimeoutException("创建线状构件操作超时");
+                    throw new TimeoutException("Timed out creating line-based elements");
                 }
             }
             catch (Exception ex)
             {
-                throw new Exception($"创建线状构件失败: {ex.Message}");
+                throw new Exception($"Failed to create line-based elements: {ex.Message}");
             }
         }
     }

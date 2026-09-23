@@ -37,7 +37,7 @@ namespace RevitMCPCommandSet.Commands
                 // Parse parameters
                 data = parameters["data"].ToObject<OperationSetting>();
                 if (data == null)
-                    throw new ArgumentNullException(nameof(data), "AI传入数据为空");
+                    throw new ArgumentNullException(nameof(data), "AI input data is null");
 
                 // Set the operation parameters
                 _handler.SetParameters(data);
@@ -49,12 +49,12 @@ namespace RevitMCPCommandSet.Commands
                 }
                 else
                 {
-                    throw new TimeoutException("操作元素超时");
+                    throw new TimeoutException("Element operation timed out");
                 }
             }
             catch (Exception ex)
             {
-                throw new Exception($"操作元素失败: {ex.Message}");
+                throw new Exception($"Failed to operate element: {ex.Message}");
             }
         }
     }

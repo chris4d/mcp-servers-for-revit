@@ -31,7 +31,7 @@ namespace RevitMCPCommandSet.Commands.Access
             }
             else
             {
-                throw new TimeoutException("获取信息超时");
+                throw new TimeoutException("Timed out getting view info");
             }
         }
     }

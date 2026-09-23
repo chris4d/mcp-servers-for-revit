@@ -49,7 +49,7 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<string>
                 {
                     Success = true,
-                    Message = $"成功执行操作",
+                    Message = $"Operation executed successfully",
                 };
             }
             catch (Exception ex)
@@ -57,7 +57,7 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<string>
                 {
                     Success = false,
-                    Message = $"操作元素时出错: {ex.Message}",
+                    Message = $"Error while operating element: {ex.Message}",
                 };
             }
             finally
@@ -82,7 +82,7 @@ namespace RevitMCPCommandSet.Services
         /// </summary>
         public string GetName()
         {
-            return "操作元素";
+            return "Operate Element";
         }
 
         /// <summary>
@@ -96,7 +96,7 @@ namespace RevitMCPCommandSet.Services
             // Validate the parameters
             if (uidoc == null || uidoc.Document == null || setting == null || setting.ElementIds == null ||
                 (setting.ElementIds.Count == 0 && setting.Action.ToLower() != "resetisolate"))
-                throw new Exception("参数无效：文档为空或没有指定要操作的图元");
+                throw new Exception("Invalid parameters: document is null or no elements specified to operate on");
 
             Document doc = uidoc.Document;
 
@@ -107,7 +107,7 @@ namespace RevitMCPCommandSet.Services
             ElementOperationType action;
             if (!Enum.TryParse(setting.Action, true, out action))
             {
-                throw new Exception($"未支持的操作类型：{setting.Action}");
+                throw new Exception($"Unsupported operation type: {setting.Action}");
             }
 
             // Perform different operations by operation type
@@ -143,7 +143,7 @@ namespace RevitMCPCommandSet.Services
                         if (targetView == null)
                         {
                             // If no suitable 3D view was found, throw
-                            throw new Exception("无法找到合适的3D视图用于创建剖切框");
+                            throw new Exception("Cannot find a suitable 3D view to create the section box");
                         }
 
                         // Activate the 3D view
@@ -186,7 +186,7 @@ namespace RevitMCPCommandSet.Services
 
                     if (boundingBox == null)
                     {
-                        throw new Exception("无法为所选元素创建边界框");
+                        throw new Exception("Cannot create a bounding box for the selected elements");
                     }
 
                     // Enlarge the bounding box slightly beyond the elements
@@ -195,7 +195,7 @@ namespace RevitMCPCommandSet.Services
                     boundingBox.Max = new XYZ(boundingBox.Max.X + offset, boundingBox.Max.Y + offset, boundingBox.Max.Z + offset);
 
                     // Enable and set the section box in the 3D view
-                    using (Transaction trans = new Transaction(doc, "创建剖切框"))
+                    using (Transaction trans = new Transaction(doc, "Create Section Box"))
                     {
                         trans.Start();
                         targetView.IsSectionBoxActive = true;
@@ -209,7 +209,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.SetColor:
                     // Set the elements to the specified color
-                    using (Transaction trans = new Transaction(doc, "设置元素颜色"))
+                    using (Transaction trans = new Transaction(doc, "Set Element Color"))
                     {
                         trans.Start();
                         SetElementsColor(doc, elementIds, setting.ColorValue);
@@ -222,7 +222,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.SetTransparency:
                     // Set element transparency in the current view
-                    using (Transaction trans = new Transaction(doc, "设置元素透明度"))
+                    using (Transaction trans = new Transaction(doc, "Set Element Transparency"))
                     {
                         trans.Start();
 
@@ -247,7 +247,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.Delete:
                     // Delete elements (requires a transaction)
-                    using (Transaction trans = new Transaction(doc, "删除元素"))
+                    using (Transaction trans = new Transaction(doc, "Delete Element"))
                     {
                         trans.Start();
                         doc.Delete(elementIds);
@@ -257,7 +257,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.Hide:
                     // Hide elements (requires an active view and a transaction)
-                    using (Transaction trans = new Transaction(doc, "隐藏元素"))
+                    using (Transaction trans = new Transaction(doc, "Hide Elements"))
                     {
                         trans.Start();
                         doc.ActiveView.HideElements(elementIds);
@@ -267,7 +267,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.TempHide:
                     // Temporarily hide elements (requires an active view and a transaction)
-                    using (Transaction trans = new Transaction(doc, "临时隐藏元素"))
+                    using (Transaction trans = new Transaction(doc, "Temporarily Hide Elements"))
                     {
                         trans.Start();
                         doc.ActiveView.HideElementsTemporary(elementIds);
@@ -277,7 +277,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.Isolate:
                     // Isolate elements (requires an active view and a transaction)
-                    using (Transaction trans = new Transaction(doc, "隔离元素"))
+                    using (Transaction trans = new Transaction(doc, "Isolate Elements"))
                     {
                         trans.Start();
                         doc.ActiveView.IsolateElementsTemporary(elementIds);
@@ -287,7 +287,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.Unhide:
                     // Unhide elements (requires an active view and a transaction)
-                    using (Transaction trans = new Transaction(doc, "取消隐藏元素"))
+                    using (Transaction trans = new Transaction(doc, "Unhide Elements"))
                     {
                         trans.Start();
                         doc.ActiveView.UnhideElements(elementIds);
@@ -297,7 +297,7 @@ namespace RevitMCPCommandSet.Services
 
                 case ElementOperationType.ResetIsolate:
                     // Reset isolation (requires an active view and a transaction)
-                    using (Transaction trans = new Transaction(doc, "重置隔离"))
+                    using (Transaction trans = new Transaction(doc, "Reset Isolate"))
                     {
                         trans.Start();
                         doc.ActiveView.DisableTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
@@ -306,7 +306,7 @@ namespace RevitMCPCommandSet.Services
                     return true;
 
                 default:
-                    throw new Exception($"未支持的操作类型：{setting.Action}");
+                    throw new Exception($"Unsupported operation type: {setting.Action}");
             }
         }
 
@@ -357,7 +357,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                throw new Exception($"设置填充图案失败: {ex.Message}");
+                throw new Exception($"Failed to set fill pattern: {ex.Message}");
             }
 
             // Apply the override settings to each element

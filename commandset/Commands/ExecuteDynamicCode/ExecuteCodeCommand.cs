@@ -44,12 +44,12 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 }
                 else
                 {
-                    throw new TimeoutException("代码执行超时");
+                    throw new TimeoutException("Code execution timed out");
                 }
             }
             catch (Exception ex)
             {
-                throw new Exception($"执行代码失败: {ex.Message}", ex);
+                throw new Exception($"Failed to execute code: {ex.Message}", ex);
             }
         }
     }

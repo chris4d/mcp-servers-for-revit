@@ -41,9 +41,9 @@ namespace RevitMCPCommandSet.Utils
         {
             // Basic parameter validation
             if (doc == null)
-                throw new ArgumentNullException($"必要参数{typeof(Document)} {nameof(doc)}缺失！");
+                throw new ArgumentNullException($"Required parameter {typeof(Document)} {nameof(doc)} is missing!");
             if (familySymbol == null)
-                throw new ArgumentNullException($"必要参数{typeof(FamilySymbol)} {nameof(familySymbol)}缺失！");
+                throw new ArgumentNullException($"Required parameter {typeof(FamilySymbol)} {nameof(familySymbol)} is missing!");
 
             // Activate the family
             if (!familySymbol.IsActive)
@@ -57,7 +57,7 @@ namespace RevitMCPCommandSet.Utils
                 // One-level based family (e.g., Metric Generic Model)
                 case FamilyPlacementType.OneLevelBased:
                     if (locationPoint == null)
-                        throw new ArgumentNullException($"必要参数{typeof(XYZ)} {nameof(locationPoint)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(XYZ)} {nameof(locationPoint)} is missing!");
                     // With level info
                     if (baseLevel != null)
                     {
@@ -80,7 +80,7 @@ namespace RevitMCPCommandSet.Utils
                 // One-level based hosted family (e.g., doors, windows)
                 case FamilyPlacementType.OneLevelBasedHosted:
                     if (locationPoint == null)
-                        throw new ArgumentNullException($"必要参数{typeof(XYZ)} {nameof(locationPoint)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(XYZ)} {nameof(locationPoint)} is missing!");
 
                     Element host = explicitHost;
                     XYZ placementPoint = locationPoint;
@@ -116,7 +116,7 @@ namespace RevitMCPCommandSet.Utils
                     }
 
                     if (host == null)
-                        throw new ArgumentNullException($"找不到合规的的宿主信息！");
+                        throw new ArgumentNullException("No valid host found!");
 
                     if (baseLevel != null)
                     {
@@ -150,9 +150,9 @@ namespace RevitMCPCommandSet.Utils
                 // Two-level based family (e.g., columns)
                 case FamilyPlacementType.TwoLevelsBased:
                     if (locationPoint == null)
-                        throw new ArgumentNullException($"必要参数{typeof(XYZ)} {nameof(locationPoint)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(XYZ)} {nameof(locationPoint)} is missing!");
                     if (baseLevel == null)
-                        throw new ArgumentNullException($"必要参数{typeof(Level)} {nameof(baseLevel)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(Level)} {nameof(baseLevel)} is missing!");
                     // Determine whether it is a structural or architectural column
                     StructuralType structuralType = StructuralType.NonStructural;
                     if (familySymbol.Category.Id.GetIntValue() == (int)BuiltInCategory.OST_StructuralColumns)
@@ -206,7 +206,7 @@ namespace RevitMCPCommandSet.Utils
                 // View-specific family (e.g., detail annotations)
                 case FamilyPlacementType.ViewBased:
                     if (locationPoint == null)
-                        throw new ArgumentNullException($"必要参数{typeof(XYZ)} {nameof(locationPoint)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(XYZ)} {nameof(locationPoint)} is missing!");
                     instance = doc.Create.NewFamilyInstance(
                         locationPoint,  // The origin of the family instance. If created in a plan view (ViewPlan), this origin is projected onto the plane view
                         familySymbol,   // The family symbol object representing the type of instance to insert
@@ -216,11 +216,11 @@ namespace RevitMCPCommandSet.Utils
                 // Work-plane based family (e.g., Metric face-based generic model, including face-based, wall-based, etc.)
                 case FamilyPlacementType.WorkPlaneBased:
                     if (locationPoint == null)
-                        throw new ArgumentNullException($"必要参数{typeof(XYZ)} {nameof(locationPoint)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(XYZ)} {nameof(locationPoint)} is missing!");
                     // Get the nearest host face
                     Reference hostFace = doc.GetNearestFaceReference(locationPoint, 1000 / 304.8);
                     if (hostFace == null)
-                        throw new ArgumentNullException($"找不到合规的的宿主信息！");
+                        throw new ArgumentNullException("No valid host found!");
                     if (faceDirection == null || faceDirection == XYZ.Zero)
                     {
                         var result = doc.GenerateDefaultOrientation(hostFace);
@@ -237,7 +237,7 @@ namespace RevitMCPCommandSet.Utils
                 // Curve based, on work-plane family (e.g., Metric line-based generic model)
                 case FamilyPlacementType.CurveBased:
                     if (locationLine == null)
-                        throw new ArgumentNullException($"必要参数{typeof(Line)} {nameof(locationLine)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(Line)} {nameof(locationLine)} is missing!");
 
                     // Get the nearest host face (no tolerance allowed)
                     Reference lineHostFace = doc.GetNearestFaceReference(locationLine.Evaluate(0.5, true), 1e-5);
@@ -275,9 +275,9 @@ namespace RevitMCPCommandSet.Utils
                 // Curve based, in a specific view family (e.g., detail components)
                 case FamilyPlacementType.CurveBasedDetail:
                     if (locationLine == null)
-                        throw new ArgumentNullException($"必要参数{typeof(Line)} {nameof(locationLine)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(Line)} {nameof(locationLine)} is missing!");
                     if (view == null)
-                        throw new ArgumentNullException($"必要参数{typeof(View)} {nameof(view)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(View)} {nameof(view)} is missing!");
                     instance = doc.Create.NewFamilyInstance(
                         locationLine,   // The line location of the family instance. The line must lie in the view plane
                         familySymbol,   // The family symbol object representing the type of instance to insert
@@ -287,9 +287,9 @@ namespace RevitMCPCommandSet.Utils
                 // Curve-driven structural family (e.g., beams, braces, or sloped columns)
                 case FamilyPlacementType.CurveDrivenStructural:
                     if (locationLine == null)
-                        throw new ArgumentNullException($"必要参数{typeof(Line)} {nameof(locationLine)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(Line)} {nameof(locationLine)} is missing!");
                     if (baseLevel == null)
-                        throw new ArgumentNullException($"必要参数{typeof(Level)} {nameof(baseLevel)}缺失！");
+                        throw new ArgumentNullException($"Required parameter {typeof(Level)} {nameof(baseLevel)} is missing!");
                     instance = doc.Create.NewFamilyInstance(
                         locationLine,                   // The curve on which the family instance is based
                         familySymbol,                   // A FamilySymbol object representing the type of instance to insert. Note that this symbol must represent a family whose FamilyPlacementType is WorkPlaneBased or CurveBased
@@ -299,7 +299,7 @@ namespace RevitMCPCommandSet.Utils
 
                 // Adaptive family (e.g., Metric Adaptive Generic Model, curtain wall panels)
                 case FamilyPlacementType.Adaptive:
-                    throw new NotImplementedException("未实现FamilyPlacementType.Adaptive创建方法！");
+                    throw new NotImplementedException("FamilyPlacementType.Adaptive creation is not implemented!");
 
                 default:
                     break;
@@ -422,7 +422,7 @@ namespace RevitMCPCommandSet.Utils
 
                 if (view3D == null)
                 {
-                    TaskDialog.Show("错误", "无法创建或获取3D视图");
+                    TaskDialog.Show("Error", "Unable to create or get a 3D view");
                     return null;
                 }
 
@@ -481,7 +481,7 @@ namespace RevitMCPCommandSet.Utils
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("错误", $"获取最近面时发生错误：{ex.Message}");
+                TaskDialog.Show("Error", $"Error occurred while getting the nearest face: {ex.Message}");
                 return null;
             }
         }
@@ -539,7 +539,7 @@ namespace RevitMCPCommandSet.Utils
 
                 if (view3D == null)
                 {
-                    TaskDialog.Show("错误", "无法创建或获取3D视图");
+                    TaskDialog.Show("Error", "Unable to create or get a 3D view");
                     return null;
                 }
 
@@ -604,7 +604,7 @@ namespace RevitMCPCommandSet.Utils
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("错误", $"获取最近宿主元素时发生错误：{ex.Message}");
+                TaskDialog.Show("Error", $"Error occurred while getting the nearest host element: {ex.Message}");
                 return null;
             }
         }
@@ -698,7 +698,7 @@ namespace RevitMCPCommandSet.Utils
 
             if (solidFill == null)
             {
-                TaskDialog.Show("错误", "未找到实心填充图案");
+                TaskDialog.Show("Error", "Solid fill pattern not found");
                 return;
             }
 
@@ -724,7 +724,7 @@ namespace RevitMCPCommandSet.Utils
         {
             // 1. Parameter validation
             if (face == null)
-                throw new ArgumentNullException(nameof(face), "面不能为空");
+                throw new ArgumentNullException(nameof(face), "Face cannot be null");
 
             // 2. Get the face normal vector, used for any later perpendicular vector calculations
             XYZ faceNormal = face.ComputeNormal(new UV(0.5, 0.5));
@@ -732,7 +732,7 @@ namespace RevitMCPCommandSet.Utils
             // 3. Get the face's outer outline
             EdgeArrayArray edgeLoops = face.EdgeLoops;
             if (edgeLoops.Size == 0)
-                throw new ArgumentException("面没有有效的边循环", nameof(face));
+                throw new ArgumentException("The face has no valid edge loops", nameof(face));
 
             // Usually the first loop is the outer outline
             EdgeArray outerLoop = edgeLoops.get_Item(0);
@@ -761,7 +761,7 @@ namespace RevitMCPCommandSet.Utils
 
             if (edgeDirections.Count < 4) // Ensure there are at least 4 edges
             {
-                throw new ArgumentException("提供的面没有足够的边来形成有效的形状", nameof(face));
+                throw new ArgumentException("The provided face does not have enough edges to form a valid shape", nameof(face));
             }
 
             // 5. Group edges with similar directions
@@ -847,7 +847,7 @@ namespace RevitMCPCommandSet.Utils
             else
             {
                 // Unable to extract valid directions (rarely occurs)
-                throw new InvalidOperationException("无法从面中提取有效的方向");
+                throw new InvalidOperationException("Unable to extract valid directions from the face");
             }
         }
 
@@ -997,7 +997,7 @@ namespace RevitMCPCommandSet.Utils
         public static Level FindNearestLevel(this Document doc, double height)
         {
             if (doc == null)
-                throw new ArgumentNullException(nameof(doc), "文档不能为空");
+                throw new ArgumentNullException(nameof(doc), "Document cannot be null");
 
             // Query directly with LINQ for the nearest level
             return new FilteredElementCollector(doc)

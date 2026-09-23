@@ -51,7 +51,7 @@ namespace RevitMCPCommandSet.Services
                 List<object> createdTags = new List<object>();
                 List<string> errors = new List<string>();
 
-                using (Transaction tran = new Transaction(doc, "标记墙体"))
+                using (Transaction tran = new Transaction(doc, "Tag Walls"))
                 {
                     tran.Start();
 
@@ -63,7 +63,7 @@ namespace RevitMCPCommandSet.Services
                         TaggingResults = new
                         {
                             success = false,
-                            message = "没有找到墙标记族类型"
+                            message = "No wall tag family type found"
                         };
                         tran.RollBack();
                         return;
@@ -120,7 +120,7 @@ namespace RevitMCPCommandSet.Services
                         }
                         catch (Exception ex)
                         {
-                            errors.Add($"标记墙体 {wall.Id.Value} 出错: {ex.Message}");
+                            errors.Add($"Error tagging wall {wall.Id.Value}: {ex.Message}");
                         }
 #else
 try
@@ -163,7 +163,7 @@ try
                         }
                         catch (Exception ex)
                         {
-                            errors.Add($"标记墙体 {wall.Id.IntegerValue} 出错: {ex.Message}");
+                            errors.Add($"Error tagging wall {wall.Id.IntegerValue}: {ex.Message}");
                         }
 #endif
                     }
@@ -182,11 +182,11 @@ try
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("错误", $"标记墙体时出错: {ex.Message}");
+                TaskDialog.Show("Error", $"Error tagging walls: {ex.Message}");
                 TaggingResults = new
                 {
                     success = false,
-                    message = $"发生错误: {ex.Message}"
+                    message = $"An error occurred: {ex.Message}"
                 };
             }
             finally
@@ -211,7 +211,7 @@ try
         /// </summary>
         public string GetName()
         {
-            return "标记墙";
+            return "Tag Wall";
         }
 
         /// <summary>

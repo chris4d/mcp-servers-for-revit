@@ -32,7 +32,7 @@ namespace RevitMCPCommandSet.Commands
                 // Parse parameters
                 data = parameters["data"].ToObject<List<PointElement>>();
                 if (data == null)
-                    throw new ArgumentNullException(nameof(data), "AI传入数据为空");
+                    throw new ArgumentNullException(nameof(data), "AI input data is null");
 
                 // Set the point-based element parameters
                 _handler.SetParameters(data);
@@ -44,12 +44,12 @@ namespace RevitMCPCommandSet.Commands
                 }
                 else
                 {
-                    throw new TimeoutException("创建点状构件操作超时");
+                    throw new TimeoutException("Timed out creating point-based elements");
                 }
             }
             catch (Exception ex)
             {
-                throw new Exception($"创建点状构件失败: {ex.Message}");
+                throw new Exception($"Failed to create point-based elements: {ex.Message}");
             }
         }
     }

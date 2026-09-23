@@ -23,7 +23,7 @@ namespace RevitMCPCommandSet.Services
         /// Execution result (output data)
         /// </summary>
         public AIResult<List<int>> Result { get; private set; }
-        public string _floorName = "常规 - ";
+        public string _floorName = "Generic - ";
         public bool _structural = true;
         private List<string> _warnings = new List<string>();
 
@@ -184,7 +184,7 @@ namespace RevitMCPCommandSet.Services
 
                     // Step3 Batch-create floors
                     Floor floor = null;
-                    using (Transaction transaction = new Transaction(doc, "创建面状构件"))
+                    using (Transaction transaction = new Transaction(doc, "Create Surface-Based Elements"))
                     {
                         transaction.Start();
 
@@ -282,9 +282,9 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<List<int>>
                 {
                     Success = false,
-                    Message = $"创建面状构件时出错: {ex.Message}",
+                    Message = $"Error creating surface-based elements: {ex.Message}",
                 };
-                TaskDialog.Show("错误", $"创建面状构件时出错: {ex.Message}");
+                TaskDialog.Show("Error", $"Error creating surface-based elements: {ex.Message}");
             }
             finally
             {
@@ -308,7 +308,7 @@ namespace RevitMCPCommandSet.Services
         /// </summary>
         public string GetName()
         {
-            return "创建面状构件";
+            return "Create Surface-Based Elements";
         }
 
         /// <summary>

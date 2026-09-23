@@ -75,7 +75,7 @@ namespace RevitMCPCommandSet.Models.Common
             // Check whether at least one kind of element is selected
             if (!IncludeTypes && !IncludeInstances)
             {
-                errorMessage = "过滤设置无效: 必须至少包含元素类型或元素实例之一";
+                errorMessage = "Invalid filter settings: at least one of element types or element instances must be included";
                 return false;
             }
 
@@ -84,7 +84,7 @@ namespace RevitMCPCommandSet.Models.Common
                 string.IsNullOrWhiteSpace(FilterElementType) &&
                 FilterFamilySymbolId <= 0)
             {
-                errorMessage = "过滤设置无效: 必须至少指定一个过滤条件(类别、元素类型或族类型)";
+                errorMessage = "Invalid filter settings: at least one filter condition (category, element type, or family type) must be specified";
                 return false;
             }
 
@@ -93,12 +93,12 @@ namespace RevitMCPCommandSet.Models.Common
             {
                 List<string> invalidFilters = new List<string>();
                 if (FilterFamilySymbolId > 0)
-                    invalidFilters.Add("族实例过滤");
+                    invalidFilters.Add("family instance filter");
                 if (FilterVisibleInCurrentView)
-                    invalidFilters.Add("视图可见性过滤");
+                    invalidFilters.Add("view visibility filter");
                 if (invalidFilters.Count > 0)
                 {
-                    errorMessage = $"当仅过滤类型元素时，以下过滤器不适用: {string.Join(", ", invalidFilters)}";
+                    errorMessage = $"When filtering type elements only, the following filters do not apply: {string.Join(", ", invalidFilters)}";
                     return false;
                 }
             }
@@ -110,13 +110,13 @@ namespace RevitMCPCommandSet.Models.Common
                     BoundingBoxMin.Y > BoundingBoxMax.Y ||
                     BoundingBoxMin.Z > BoundingBoxMax.Z)
                 {
-                    errorMessage = "空间范围过滤器设置无效: 最小点坐标必须小于或等于最大点坐标";
+                    errorMessage = "Invalid bounding box filter: the minimum point coordinates must be less than or equal to the maximum point coordinates";
                     return false;
                 }
             }
             else if (BoundingBoxMin != null || BoundingBoxMax != null)
             {
-                errorMessage = "空间范围过滤器设置无效: 必须同时设置最小点和最大点坐标";
+                errorMessage = "Invalid bounding box filter: both the minimum and maximum point coordinates must be set";
                 return false;
             }
             return true;

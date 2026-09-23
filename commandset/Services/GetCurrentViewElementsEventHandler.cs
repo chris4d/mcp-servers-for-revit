@@ -226,7 +226,7 @@ namespace RevitMCPCommandSet.Services
 
         public string GetName()
         {
-            return "获取当前视图元素";
+            return "Get Current View Elements";
         }
     }
 }

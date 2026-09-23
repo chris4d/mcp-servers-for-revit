@@ -60,7 +60,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("Error", "获取选中元素失败: " + ex.Message);
+                TaskDialog.Show("Error", "Failed to get selected elements: " + ex.Message);
                 ResultElements = new List<Models.Common.ElementInfo>();
             }
             finally
@@ -72,7 +72,7 @@ namespace RevitMCPCommandSet.Services
 
         public string GetName()
         {
-            return "获取选中元素";
+            return "Get Selected Elements";
         }
     }
 }

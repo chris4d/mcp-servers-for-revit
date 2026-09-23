@@ -45,7 +45,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("error", "获取信息失败");
+                TaskDialog.Show("error", "Failed to get view info");
             }
             finally
             {
@@ -56,7 +56,7 @@ namespace RevitMCPCommandSet.Services
 
         public string GetName()
         {
-            return "获取当前视图信息";
+            return "Get Current View Info";
         }
     }
 }

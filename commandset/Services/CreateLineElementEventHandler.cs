@@ -26,8 +26,8 @@ namespace RevitMCPCommandSet.Services
         public AIResult<List<int>> Result { get; private set; }
         private List<string> _warnings = new List<string>();
 
-        public string _wallName = "常规 - ";
-        public string _ductName = "矩形风管 - ";
+        public string _wallName = "Generic - ";
+        public string _ductName = "Rectangular Duct - ";
 
         /// <summary>
         /// Sets the creation parameters
@@ -166,7 +166,7 @@ namespace RevitMCPCommandSet.Services
                     }
 
                     // Step3 Call the generic method to create the family instance
-                    using (Transaction transaction = new Transaction(doc, "创建点状构件"))
+                    using (Transaction transaction = new Transaction(doc, "Create Line-Based Elements"))
                     {
                         transaction.Start();
                         switch (builtInCategory)
@@ -251,9 +251,9 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<List<int>>
                 {
                     Success = false,
-                    Message = $"创建线状构件时出错: {ex.Message}",
+                    Message = $"Error creating line-based elements: {ex.Message}",
                 };
-                TaskDialog.Show("错误", $"创建线状构件时出错: {ex.Message}");
+                TaskDialog.Show("Error", $"Error creating line-based elements: {ex.Message}");
             }
             finally
             {
@@ -277,7 +277,7 @@ namespace RevitMCPCommandSet.Services
         /// </summary>
         public string GetName()
         {
-            return "创建线状构件";
+            return "Create Line-Based Elements";
         }
 
         /// <summary>
@@ -312,7 +312,7 @@ namespace RevitMCPCommandSet.Services
             }
 
             if (baseWallType == null)
-                throw new InvalidOperationException("未找到可用的基础墙类型");
+                throw new InvalidOperationException("No usable wall type found");
 
             // Duplicate the wall type
             WallType newWallType = null;
@@ -369,7 +369,7 @@ namespace RevitMCPCommandSet.Services
                                     .FirstOrDefault(d => d.Shape == ConnectorProfileType.Rectangular);
 
             if (baseDuctType == null)
-                throw new InvalidOperationException("未找到可用的基础矩形风管类型");
+                throw new InvalidOperationException("No usable rectangular duct type found");
 
             // Duplicate the duct type
             DuctType newDuctType = baseDuctType.Duplicate(typeName) as DuctType;

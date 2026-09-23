@@ -124,7 +124,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("Error", "获取族类型失败: " + ex.Message);
+                TaskDialog.Show("Error", "Failed to get family types: " + ex.Message);
             }
             finally
             {

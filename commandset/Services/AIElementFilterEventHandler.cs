@@ -57,7 +57,7 @@ namespace RevitMCPCommandSet.Services
                 // Get the IDs of elements matching the specified conditions
                 var elementList = GetFilteredElements(doc, FilterSetting);
                 if (elementList == null || !elementList.Any())
-                    throw new Exception("未在项目中找到指定元素，请检查过滤器设置是否正确");
+                    throw new Exception("No elements matching the filter were found in the project; check the filter settings");
                 // Maximum filter result count limit
                 string message = "";
                 if (FilterSetting.MaxElements > 0)
@@ -65,7 +65,7 @@ namespace RevitMCPCommandSet.Services
                     if (elementList.Count > FilterSetting.MaxElements)
                     {
                         elementList = elementList.Take(FilterSetting.MaxElements).ToList();
-                        message = $"。此外，符合过滤条件的共有 {elementList.Count} 个元素，仅显示前 {FilterSetting.MaxElements} 个";
+                        message = $". In addition, {elementList.Count} elements matched the filter conditions; only the first {FilterSetting.MaxElements} are shown";
                     }
                 }
 
@@ -75,7 +75,7 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<List<object>>
                 {
                     Success = true,
-                    Message = $"成功获取{elementInfoList.Count}个元素信息，具体信息储存在Response属性中"+ message,
+                    Message = $"Successfully retrieved info for {elementInfoList.Count} elements; details are stored in the Response property" + message,
                     Response = elementInfoList,
                 };
             }
@@ -84,7 +84,7 @@ namespace RevitMCPCommandSet.Services
                 Result = new AIResult<List<object>>
                 {
                     Success = false,
-                    Message = $"获取元素信息时出错: {ex.Message}",
+                    Message = $"Error getting element info: {ex.Message}",
                 };
             }
             finally
@@ -109,7 +109,7 @@ namespace RevitMCPCommandSet.Services
         /// </summary>
         public string GetName()
         {
-            return "获取元素信息";
+            return "Get Element Info";
         }
 
         /// <summary>
@@ -127,7 +127,7 @@ namespace RevitMCPCommandSet.Services
             // Validate the filter settings
             if (!settings.Validate(out string errorMessage))
             {
-                System.Diagnostics.Trace.WriteLine($"过滤器设置无效: {errorMessage}");
+                System.Diagnostics.Trace.WriteLine($"Invalid filter settings: {errorMessage}");
                 return new List<Element>();
             }
             // Record which filter conditions are applied
@@ -156,8 +156,8 @@ namespace RevitMCPCommandSet.Services
             // Output info about the applied filters
             if (appliedFilters.Count > 0)
             {
-                System.Diagnostics.Trace.WriteLine($"已应用 {appliedFilters.Count} 个过滤条件: {string.Join(", ", appliedFilters)}");
-                System.Diagnostics.Trace.WriteLine($"最终筛选结果: 共找到 {result.Count} 个元素");
+                System.Diagnostics.Trace.WriteLine($"Applied {appliedFilters.Count} filter conditions: {string.Join(", ", appliedFilters)}");
+                System.Diagnostics.Trace.WriteLine($"Final filter result: found {result.Count} elements in total");
             }
             return result;
 
@@ -174,7 +174,7 @@ namespace RevitMCPCommandSet.Services
             if (!isElementType && settings.FilterVisibleInCurrentView && doc.ActiveView != null)
             {
                 collector = new FilteredElementCollector(doc, doc.ActiveView.Id);
-                appliedFilters.Add("当前视图可见元素");
+                appliedFilters.Add("elements visible in current view");
             }
             else
             {
@@ -184,12 +184,12 @@ namespace RevitMCPCommandSet.Services
             if (isElementType)
             {
                 collector = collector.WhereElementIsElementType();
-                appliedFilters.Add("仅元素类型");
+                appliedFilters.Add("element types only");
             }
             else
             {
                 collector = collector.WhereElementIsNotElementType();
-                appliedFilters.Add("仅元素实例");
+                appliedFilters.Add("element instances only");
             }
             // Create the filter list
             List<ElementFilter> filters = new List<ElementFilter>();
@@ -199,11 +199,11 @@ namespace RevitMCPCommandSet.Services
                 BuiltInCategory category;
                 if (!Enum.TryParse(settings.FilterCategory, true, out category))
                 {
-                    throw new ArgumentException($"无法将 '{settings.FilterCategory}' 转换为有效的Revit类别。");
+                    throw new ArgumentException($"Cannot convert '{settings.FilterCategory}' to a valid Revit category.");
                 }
                 ElementCategoryFilter categoryFilter = new ElementCategoryFilter(category);
                 filters.Add(categoryFilter);
-                appliedFilters.Add($"类别：{settings.FilterCategory}");
+                appliedFilters.Add($"Category: {settings.FilterCategory}");
             }
             // 2. Element type filter
             if (!string.IsNullOrWhiteSpace(settings.FilterElementType))
@@ -227,11 +227,11 @@ namespace RevitMCPCommandSet.Services
                 {
                     ElementClassFilter classFilter = new ElementClassFilter(elementType);
                     filters.Add(classFilter);
-                    appliedFilters.Add($"元素类型：{elementType.Name}");
+                    appliedFilters.Add($"Element type: {elementType.Name}");
                 }
                 else
                 {
-                    throw new Exception($"警告：无法找到类型 '{settings.FilterElementType}'");
+                    throw new Exception($"Warning: could not find type '{settings.FilterElementType}'");
                 }
             }
             // 3. Family symbol filter (applies only to element instances)
@@ -246,14 +246,14 @@ namespace RevitMCPCommandSet.Services
                     filters.Add(familyFilter);
                     // Add a more detailed family info log
                     FamilySymbol symbol = symbolElement as FamilySymbol;
-                    string familyName = symbol.Family?.Name ?? "未知族";
-                    string symbolName = symbol.Name ?? "未知类型";
-                    appliedFilters.Add($"族类型：{familyName} - {symbolName} (ID: {settings.FilterFamilySymbolId})");
+                    string familyName = symbol.Family?.Name ?? "Unknown family";
+                    string symbolName = symbol.Name ?? "Unknown type";
+                    appliedFilters.Add($"Family type: {familyName} - {symbolName} (ID: {settings.FilterFamilySymbolId})");
                 }
                 else
                 {
-                    string elementType = symbolElement != null ? symbolElement.GetType().Name : "不存在";
-                    System.Diagnostics.Trace.WriteLine($"警告：ID为 {settings.FilterFamilySymbolId} 的元素{(symbolElement == null ? "不存在" : "不是有效的FamilySymbol")} (实际类型: {elementType})");
+                    string elementType = symbolElement != null ? symbolElement.GetType().Name : "not found";
+                    System.Diagnostics.Trace.WriteLine($"Warning: element with ID {settings.FilterFamilySymbolId} {(symbolElement == null ? "does not exist" : "is not a valid FamilySymbol")} (actual type: {elementType})");
                 }
             }
             // 4. Spatial range filter
@@ -267,7 +267,7 @@ namespace RevitMCPCommandSet.Services
                 // Create the intersection filter
                 BoundingBoxIntersectsFilter boundingBoxFilter = new BoundingBoxIntersectsFilter(outline);
                 filters.Add(boundingBoxFilter);
-                appliedFilters.Add($"空间范围过滤：Min({settings.BoundingBoxMin.X:F2}, {settings.BoundingBoxMin.Y:F2}, {settings.BoundingBoxMin.Z:F2}), " +
+                appliedFilters.Add($"Bounding box filter: Min({settings.BoundingBoxMin.X:F2}, {settings.BoundingBoxMin.Y:F2}, {settings.BoundingBoxMin.Z:F2}), " +
                                   $"Max({settings.BoundingBoxMax.X:F2}, {settings.BoundingBoxMax.Y:F2}, {settings.BoundingBoxMax.Z:F2}) mm");
             }
             // Apply the combined filter
@@ -279,7 +279,7 @@ namespace RevitMCPCommandSet.Services
                 collector = collector.WherePasses(combinedFilter);
                 if (filters.Count > 1)
                 {
-                    System.Diagnostics.Trace.WriteLine($"应用了{filters.Count}个过滤条件的组合过滤器 (逻辑AND关系)");
+                    System.Diagnostics.Trace.WriteLine($"Combined filter with {filters.Count} conditions applied (logical AND)");
                 }
             }
             return collector.ToElements().ToList();
@@ -510,7 +510,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建空间定位元素信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating positioning element info: {ex.Message}");
                 return null;
             }
         }
@@ -572,7 +572,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建空间元素信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating spatial element info: {ex.Message}");
                 return null;
             }
         }
@@ -642,7 +642,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建视图元素信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating view element info: {ex.Message}");
                 return null;
             }
         }
@@ -719,7 +719,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建注释元素信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating annotation element info: {ex.Message}");
                 return null;
             }
         }
@@ -789,7 +789,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建组和链接信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating group/link info: {ex.Message}");
                 return null;
             }
         }
@@ -818,7 +818,7 @@ namespace RevitMCPCommandSet.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"创建元素基础信息时出错: {ex.Message}");
+                System.Diagnostics.Trace.WriteLine($"Error creating basic element info: {ex.Message}");
                 return null;
             }
         }
@@ -872,7 +872,7 @@ namespace RevitMCPCommandSet.Services
             {
                 return new ParameterInfo
                 {
-                    Name = "厚度",
+                    Name = "Thickness",
                     Value = $"{thicknessParam.AsDouble() * 304.8}"
                 };
             }
@@ -998,7 +998,7 @@ namespace RevitMCPCommandSet.Services
 
                 return new ParameterInfo
                 {
-                    Name = "高度",
+                    Name = "Height",
                     Value = $"{height}"
                 };
             }
