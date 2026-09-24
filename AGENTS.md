@@ -14,9 +14,10 @@ This repo is a fork of [mcp-servers-for-revit](https://github.com/mcp-servers-fo
 | `plugin/` | C# Revit add-in (`revit_mcp_plugin`). Listens, dispatches commands, hosts the Settings UI. |
 | `commandset/` | C# `RevitMCPCommandSet` — core command set (compiles to `RevitMCPCommandSet.dll`). |
 | `offaxis-commandset/` | C# `OffAxisCommandSet` — the off-axis detection/fix command set (compiles to `OffAxisCommandSet.dll`), plus standalone ZIP distribution. |
+| `dwg-commandset/` | C# `DwgCommandSet` — DWG import toolset (grid/model lines/walls/poche walls from placed DWG layers; compiles to `DwgCommandSet.dll`). Includes a pure-geometry core (`Geometry/`) used by unit tests. |
 | `installer/` | Inno Setup packaging (`build-installer.ps1` generates `.iss`, compiles `mcp-servers-for-revit-setup.exe`). |
-| `scripts/` | Release script (`release.ps1`). |
-| `tests/` | Tests. |
+| `scripts/` | Release script (`release.ps1`) + DWG wall scorecard scorer (`score-walls.ps1`). |
+| `tests/` | `dwg-geometry/` TUnit suite (36 tests) covering `dwg-commandset/Geometry`; run via the test exe directly (`dotnet test` crashes with this TUnit/MTP combo). |
 
 The off-axis detector/fixer logic is **promoted into compiled C# commands** (see §Off-Axis Toolkit). The original Roslyn `.csx` prototype scripts are **frozen** in a separate archive repo (see §Frozen Script Archive) — do not treat them as live source.
 
@@ -122,7 +123,9 @@ The following learnings were hard-won during development and remain authoritativ
 - Report exact counts: **Fixed**, **Skipped (reason)**, and **LargeFix**; flag constraint-locked (dimensioned/curtain-wall-hosted) elements that rolled back safely.
 - When dispatching to the compiled tools, pass `elementIds`/`hostIds`/`lineIds` as JSON arrays or CSV strings. For spacing passes use 10–12 IDs per call; all warnings/errors are handled headlessly by the `FailuresProcessing` delegate.
 - Always set `transactionMode: "none"` when a script/command manages its own transactions.
-- `send_code_to_revit` contract: the snippet runs inside `Execute(Document document, object[] parameters)` — use lowercase `document`, return with `return ...`, length-like values are in internal **feet**. Compile-error line numbers are 1-based snippet-relative (requires this repo's commandset build, branch `feature/send-code-contract-guidance`). Failure results are labeled `"Code failed to execute."` instead of a success envelope. A companion global opencode skill `revit-code-execution` (in the user's `~/.config/opencode/skills/`) carries the durable API lessons for agents.
+- `send_code_to_revit` contract: the snippet runs inside `Execute(Document document, object[] parameters)` — use lowercase `document`, return with `return ...`, length-like values are in internal **feet**. Compile-error line numbers are 1-based snippet-relative (since v1.1.6). Failure results are labeled `"Code failed to execute."` instead of a success envelope. A companion global opencode skill `revit-code-execution` (in the user's `~/.config/opencode/skills/`) carries the durable API lessons for agents.
+- `reload_command_set` (v1.1.7+): plugin built-in byte-loads matching command-set DLLs by hash; `RevitMCPCommandSet.dll` itself is LoadFrom-resident (Roslyn dependency probing) so it can't hot-reload — restart Revit to refresh it. The tool returns the full registered-command list, useful to verify tool advertisement vs registration.
+- Release workflow (as of v1.1.7): merge feature branches into `main`, bump version in `plugin/Properties/AssemblyInfo.cs` + `server/package.json` (+ `npm install --package-lock-only` in `server/`), build installer via `powershell -Command "& { .\installer\build-installer.ps1 }"` (R20–R23 dwg/offaxis build failures inside the installer are **expected** — those extras ship only for R24–R26), build `offaxis-commandset/build-package.ps1` if the off-axis set changed, commit the regenerated `.iss`, push, tag, `gh release create -R chris4d/mcp-servers-for-revit` (plain `gh` targets the upstream repo and 403s).`
 
 ---
 
