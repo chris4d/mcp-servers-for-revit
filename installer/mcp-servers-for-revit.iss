@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.1.6
+AppVersion=1.1.7
 AppPublisher=MCP Servers for Revit
 AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
@@ -490,25 +490,25 @@ begin
   ClaudeCB := TNewCheckBox.Create(WizardForm);
   ClaudeCB.Parent := Page.Surface;
   ClaudeCB.SetBounds(ScaleX(20), ScaleY(40), ScaleX(400), ScaleY(20));
-  ClaudeCB.Caption := 'Claude Desktop (' + GetAppDataDir + '\Claude)';
+  ClaudeCB.Caption := 'Claude Desktop (' + GetAppDataDir + '\Claude\)';
   ClaudeCB.Checked := FileExists(GetAppDataDir + '\\Claude\\claude_desktop_config.json');
 
   CursorCB := TNewCheckBox.Create(WizardForm);
   CursorCB.Parent := Page.Surface;
   CursorCB.SetBounds(ScaleX(20), ScaleY(65), ScaleX(400), ScaleY(20));
-  CursorCB.Caption := 'Cursor (' + GetUserProfilePath + '\.cursor)';
+  CursorCB.Caption := 'Cursor (' + GetUserProfilePath + '\.cursor\)';
   CursorCB.Checked := DirExists(GetUserProfilePath + '\\.cursor');
 
   OpencodeCB := TNewCheckBox.Create(WizardForm);
   OpencodeCB.Parent := Page.Surface;
   OpencodeCB.SetBounds(ScaleX(20), ScaleY(90), ScaleX(400), ScaleY(20));
-  OpencodeCB.Caption := 'opencode (' + GetUserProfilePath + '\.config\opencode)';
+  OpencodeCB.Caption := 'opencode (' + GetUserProfilePath + '\.config\opencode\)';
   OpencodeCB.Checked := DirExists(GetUserProfilePath + '\\.config\\opencode');
 
   AnythingLLMCB := TNewCheckBox.Create(WizardForm);
   AnythingLLMCB.Parent := Page.Surface;
   AnythingLLMCB.SetBounds(ScaleX(20), ScaleY(115), ScaleX(400), ScaleY(20));
-  AnythingLLMCB.Caption := 'AnythingLLM (' + GetAppDataDir + '\anythingllm-desktop)';
+  AnythingLLMCB.Caption := 'AnythingLLM (' + GetAppDataDir + '\anythingllm-desktop\)';
   AnythingLLMCB.Checked := DirExists(GetAppDataDir + '\\anythingllm-desktop');
 end;
 
