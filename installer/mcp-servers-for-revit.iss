@@ -162,6 +162,69 @@ begin
   end;
 end;
 
+// Structural JSON sanity for the four AI-client configs. The Pascal
+// runtime has no JSON parser, so this checks the failure modes string
+// surgery can actually produce: unbalanced braces (ignoring quoted
+// values with backslash escapes), duplicate-key prefixes ("k": "k": {),
+// and doubled commas.
+function ConfigParseOK(C: String): Boolean;
+var I, Depth: Integer; S, Bad: String; InQ, Esc: Boolean;
+begin
+  Result := False;
+  S := Trim(C);
+  if (S = '') or (S[1] <> '{') or (S[Length(S)] <> '}') then Exit;
+  Bad := ServerKey + '": "' + ServerKey;
+  if Pos(Bad, S) > 0 then Exit;
+  if Pos(',', S) > 0 then Exit;
+  InQ := False; Esc := False; Depth := 0;
+  for I := 1 to Length(S) do begin
+    if Esc then begin Esc := False; Continue; end;
+    if InQ then begin
+      if S[I] = '\' then Esc := True
+      else if S[I] = '"' then InQ := False;
+      Continue;
+    end;
+    if S[I] = '"' then begin InQ := True; Continue; end;
+    if S[I] = '{' then Depth := Depth + 1
+    else if S[I] = '}' then begin
+      Depth := Depth - 1;
+      if Depth < 0 then Exit;
+    end;
+  end;
+  if (Depth <> 0) or InQ then Exit;
+  Result := True;
+end;
+
+// Saves a mutated config only if it still parses as JSON (structurally).
+// On sanity failure the original file is left untouched, the reason is
+// logged, and a warning dialog is shown.
+procedure GuardedSaveConfig(SL: TStringList; P, C, Client: String);
+begin
+  CleanTrailingCommas(C);
+  if ConfigParseOK(C) then begin
+    SL.Text := C;
+    SL.SaveToFile(P);
+    Log('Saved ' + Client + ' config: ' + P);
+  end else begin
+    Log('WARNING: ' + Client + ' config edit rejected (would be invalid JSON); file left untouched: ' + P);
+    MsgBox('Unable to update the ' + Client + ' AI-client config safely (the edit would produce invalid JSON). The existing file was left unchanged. You may need to configure the MCP server manually in ' + P, mbError, MB_OK);
+  end;
+end;
+
+// Entry REMOVAL guard (uninstall path): same JSON sanity, generic messaging.
+procedure GuardedRemoveConfig(SL: TStringList; P, C: String);
+begin
+  CleanTrailingCommas(C);
+  if ConfigParseOK(C) then begin
+    SL.Text := C;
+    SL.SaveToFile(P);
+    Log('Removed server entry from config: ' + P);
+  end else begin
+    Log('WARNING: config removal rejected (would be invalid JSON); file left untouched: ' + P);
+    MsgBox('Unable to remove the MCP server entry from an AI-client config safely. The existing file was left unchanged (manual cleanup may be needed in ' + P + ').', mbError, MB_OK);
+  end;
+end;
+
 // Path of the stdio launcher shim for this install, JSON-escaped (backslashes doubled).
 function ShimPathJson(): String;
 begin
@@ -189,12 +252,11 @@ end;
 procedure ReplaceNpxServerEntry(var C: String; OpenCodeStyle: Boolean);
 var I, S, E, Depth: Integer; Block, Fresh: String;
 begin
-  S := Pos(ServerKey, C);
+  S := Pos('"' + ServerKey + '"', C);
   if S = 0 then Exit;
   E := 0; Depth := 0;
   for I := S to Length(C) do begin
     if C[I] = '{' then begin
-      if Depth = 0 then S := I;
       Depth := Depth + 1;
     end else if C[I] = '}' then begin
       Depth := Depth - 1;
@@ -228,7 +290,7 @@ begin
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, SL.Text, 'Claude Desktop');
     finally SL.Free; end;
     Log('Created Claude Desktop config');
   end else begin
@@ -237,17 +299,13 @@ begin
       SL.LoadFromFile(P); C := SL.Text;
       if Pos(ServerKey, C) > 0 then begin
         ReplaceNpxServerEntry(C, False);
-        SL.Text := C;
-        SL.SaveToFile(P);
+        GuardedSaveConfig(SL, P, C, 'Claude Desktop');
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
         '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
-      CleanTrailingCommas(C);
-      SL.Text := C;
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, C, 'Claude Desktop');
     finally SL.Free; end;
-    Log('Updated Claude Desktop config');
   end;
 end;
 
@@ -267,7 +325,7 @@ begin
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
-    SL.Text := C; SL.SaveToFile(P);
+    GuardedRemoveConfig(SL, P, C);
   finally SL.Free; end;
 end;
 
@@ -287,7 +345,7 @@ begin
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, SL.Text, 'Cursor');
     finally SL.Free; end;
     Log('Created Cursor config');
   end else begin
@@ -296,17 +354,13 @@ begin
       SL.LoadFromFile(P); C := SL.Text;
       if Pos(ServerKey, C) > 0 then begin
         ReplaceNpxServerEntry(C, False);
-        SL.Text := C;
-        SL.SaveToFile(P);
+        GuardedSaveConfig(SL, P, C, 'Cursor');
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
         '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
-      CleanTrailingCommas(C);
-      SL.Text := C;
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, C, 'Cursor');
     finally SL.Free; end;
-    Log('Updated Cursor config');
   end;
 end;
 
@@ -326,7 +380,7 @@ begin
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
-    SL.Text := C; SL.SaveToFile(P);
+    GuardedRemoveConfig(SL, P, C);
   finally SL.Free; end;
 end;
 
@@ -346,7 +400,7 @@ begin
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, SL.Text, 'AnythingLLM');
     finally SL.Free; end;
     Log('Created AnythingLLM config');
   end else begin
@@ -355,17 +409,13 @@ begin
       SL.LoadFromFile(P); C := SL.Text;
       if Pos(ServerKey, C) > 0 then begin
         ReplaceNpxServerEntry(C, False);
-        SL.Text := C;
-        SL.SaveToFile(P);
+        GuardedSaveConfig(SL, P, C, 'AnythingLLM');
       Exit;
       end;
       StringChangeEx(C, '"mcpServers": {',
         '"mcpServers": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "command": "cmd",' + #13#10 + '            "args": ["/c", "' + ShimPathJson() + '"]' + #13#10 + '        },', True);
-      CleanTrailingCommas(C);
-      SL.Text := C;
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, C, 'AnythingLLM');
     finally SL.Free; end;
-    Log('Updated AnythingLLM config');
   end;
 end;
 
@@ -385,7 +435,7 @@ begin
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
-    SL.Text := C; SL.SaveToFile(P);
+    GuardedRemoveConfig(SL, P, C);
   finally SL.Free; end;
 end;
 
@@ -407,7 +457,7 @@ begin
       SL.Add('        }');
       SL.Add('    }');
       SL.Add('}');
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, SL.Text, 'opencode');
     finally SL.Free; end;
     Log('Created opencode config');
   end else begin
@@ -416,17 +466,13 @@ begin
       SL.LoadFromFile(P); C := SL.Text;
       if Pos(ServerKey, C) > 0 then begin
         ReplaceNpxServerEntry(C, True);
-        SL.Text := C;
-        SL.SaveToFile(P);
+        GuardedSaveConfig(SL, P, C, 'opencode');
       Exit;
       end;
       StringChangeEx(C, '"mcp": {',
         '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["cmd", "/c", "' + ShimPathJson() + '"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
-      CleanTrailingCommas(C);
-      SL.Text := C;
-      SL.SaveToFile(P);
+      GuardedSaveConfig(SL, P, C, 'opencode');
     finally SL.Free; end;
-    Log('Updated opencode config');
   end;
 end;
 
@@ -446,7 +492,7 @@ begin
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
-    SL.Text := C; SL.SaveToFile(P);
+    GuardedRemoveConfig(SL, P, C);
   finally SL.Free; end;
 end;
 
