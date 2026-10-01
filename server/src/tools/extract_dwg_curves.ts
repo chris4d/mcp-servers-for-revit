@@ -28,10 +28,36 @@ export function registerExtractDwgCurvesTool(server: McpServer) {
         .describe(
           "Maximum number of curves to return in the response (default 500). Layer summary always covers all matching curves."
         ),
+      includeTessellation: z
+        .boolean()
+        .default(true)
+        .optional()
+        .describe(
+          "Tessellate each returned curve (default true). Set false to return only type/layer/endpoint data - safer on very large or pathological DWGs."
+        ),
+      maxPointsPerCurve: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .optional()
+        .describe(
+          "Cap on tessellation points per curve (0 = unlimited). Excess points are omitted and 'tessellatedTruncated' reports the omitted count."
+        ),
+      countAll: z
+        .boolean()
+        .default(true)
+        .optional()
+        .describe(
+          "Traverse the entire DWG geometry tree even past maxCurves so layer totals are complete (default true). Set false to stop at maxCurves - faster on huge DWGs, but layer counts are partial and flagged with 'depthCapped'/'truncated'."
+        ),
     },
     async (args, _extra) => {
       const params: Record<string, unknown> = {
         maxCurves: args.maxCurves ?? 500,
+        includeTessellation: args.includeTessellation ?? true,
+        maxPointsPerCurve: args.maxPointsPerCurve ?? 0,
+        countAll: args.countAll ?? true,
       };
       if (args.dwgNameOrId !== undefined && args.dwgNameOrId !== "")
         params["dwgNameOrId"] = args.dwgNameOrId;

@@ -138,72 +138,68 @@ namespace RevitMCPCommandSet.Services.Dwg
                     }
                 }
 
-                void Walk(GeometryElement ge)
+                // Depth-capped walk (see DwgCurveSource.WalkGeometry for the
+                // stack-overflow rationale): flat solids are visited, faces
+                // grouped per source solid.
+                var walkStats = new DwgCurveSource.GeometryWalkStats();
+
+                Action<GeometryObject> visit = o =>
                 {
-                    foreach (var o in ge)
+                    var solid = o as Solid;
+                    if (solid == null || solid.Volume >= 1e-6) return;
+                    flatSolids++;
+
+                    foreach (Face f in solid.Faces)
                     {
-                        var gi = o as GeometryInstance;
-                        if (gi != null)
-                        {
-                            var inst = gi.GetInstanceGeometry();
-                            if (inst != null) Walk(inst);
+                        var gs3 = doc.GetElement(f.GraphicsStyleId) as GraphicsStyle;
+                        string layerName = gs3 != null && gs3.GraphicsStyleCategory != null
+                            ? gs3.GraphicsStyleCategory.Name : "";
+                        facesInspected++;
+                        if (layerHistogram.ContainsKey(layerName)) layerHistogram[layerName]++; else layerHistogram[layerName] = 1;
+                        if (layerFilter != null && !string.Equals(layerName, layerFilter, StringComparison.OrdinalIgnoreCase))
                             continue;
-                        }
-                        var solid = o as Solid;
-                        if (solid == null || solid.Volume >= 1e-6) continue;
-                        flatSolids++;
 
-                        foreach (Face f in solid.Faces)
+                        // Only planar faces carry a clean outline.
+                        var pf = f as PlanarFace;
+                        if (pf == null) { degenerateFaces++; continue; }
+
+                        var loopsOfFace = pf.GetEdgesAsCurveLoops();
+                        var faceRings = new List<List<XYZ>>();
+                        foreach (var loopDirs in loopsOfFace)
                         {
-                            var gs3 = doc.GetElement(f.GraphicsStyleId) as GraphicsStyle;
-                            string layerName = gs3 != null && gs3.GraphicsStyleCategory != null
-                                ? gs3.GraphicsStyleCategory.Name : "";
-                            facesInspected++;
-                            if (layerHistogram.ContainsKey(layerName)) layerHistogram[layerName]++; else layerHistogram[layerName] = 1;
-                            if (layerFilter != null && !string.Equals(layerName, layerFilter, StringComparison.OrdinalIgnoreCase))
-                                continue;
+                            var tess = new List<XYZ>();
+                            Tessellate(loopDirs, tess);
+                            if (tess.Count < 3) { degenerateFaces++; continue; }
 
-                            // Only planar faces carry a clean outline.
-                            var pf = f as PlanarFace;
-                            if (pf == null) { degenerateFaces++; continue; }
-
-                            var loopsOfFace = pf.GetEdgesAsCurveLoops();
-                            var faceRings = new List<List<XYZ>>();
-                            foreach (var loopDirs in loopsOfFace)
+                            // Dedupe consecutive, drop the repeated closing vertex.
+                            var vs = new List<XYZ>();
+                            foreach (var p in tess)
                             {
-                                var tess = new List<XYZ>();
-                                Tessellate(loopDirs, tess);
-                                if (tess.Count < 3) { degenerateFaces++; continue; }
-
-                                // Dedupe consecutive, drop the repeated closing vertex.
-                                var vs = new List<XYZ>();
-                                foreach (var p in tess)
-                                {
-                                    if (vs.Count > 0 && vs[vs.Count - 1].DistanceTo(p) < 0.01) continue;
-                                    vs.Add(p);
-                                }
-                                if (vs.Count >= 2 && vs[0].DistanceTo(vs[vs.Count - 1]) < 0.01) vs.RemoveAt(vs.Count - 1);
-                                if (vs.Count < 3) { degenerateFaces++; continue; }
-
-                                // Duplicate-outline collapse: top and bottom
-                                // faces of one flat solid share the same outline
-                                // signature.
-                                string sig = string.Join(";", vs.Select(p =>
-                                    Math.Round(p.X * 64.0) + "," + Math.Round(p.Y * 64.0)));
-                                if (loopSeen.Contains(sig)) continue;
-                                loopSeen.Add(sig);
-
-                                facesKept++;
-                                foreach (var p in vs) zValues.Add(p.Z);
-                                faceRings.Add(vs);
+                                if (vs.Count > 0 && vs[vs.Count - 1].DistanceTo(p) < 0.01) continue;
+                                vs.Add(p);
                             }
-                            if (faceRings.Count > 0) faceGroups.Add(faceRings);
+                            if (vs.Count >= 2 && vs[0].DistanceTo(vs[vs.Count - 1]) < 0.01) vs.RemoveAt(vs.Count - 1);
+                            if (vs.Count < 3) { degenerateFaces++; continue; }
+
+                            // Duplicate-outline collapse: top and bottom
+                            // faces of one flat solid share the same outline
+                            // signature.
+                            string sig = string.Join(";", vs.Select(p =>
+                                Math.Round(p.X * 64.0) + "," + Math.Round(p.Y * 64.0)));
+                            if (loopSeen.Contains(sig)) continue;
+                            loopSeen.Add(sig);
+
+                            facesKept++;
+                            foreach (var p in vs) zValues.Add(p.Z);
+                            faceRings.Add(vs);
                         }
+                        if (faceRings.Count > 0) faceGroups.Add(faceRings);
                     }
-                }
+                };
+
                 var geo = target.get_Geometry(new Options());
                 var swHarvest = System.Diagnostics.Stopwatch.StartNew();
-                if (geo != null) Walk(geo);
+                DwgCurveSource.WalkGeometry(geo, visit, walkStats);
                 harvestMs = swHarvest.ElapsedMilliseconds;
 
                 if (faceGroups.Count == 0)
@@ -521,6 +517,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["buildFailures"] = buildFailures,
                     ["revitFailureLog"] = preprocessor.Log,
                     ["harvestMs"] = harvestMs,
+                    ["depthCapped"] = walkStats.DepthCapped,
                     ["pipelineMs"] = pipelineMs,
                     ["buildingMs"] = buildingMs,
                     ["minWallLengthFt"] = MinWallLengthFt,

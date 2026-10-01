@@ -31,6 +31,19 @@ namespace RevitMCPCommandSet.Commands.Dwg
                 if (parameters?["maxCurves"] != null && int.TryParse(parameters["maxCurves"].ToString(), out int mc))
                     _handler.MaxCurves = Math.Max(1, mc);
 
+                bool includeTess = true;
+                if (parameters?["includeTessellation"] != null)
+                    bool.TryParse(parameters["includeTessellation"].ToString(), out includeTess);
+                _handler.IncludeTessellation = includeTess;
+
+                if (parameters?["maxPointsPerCurve"] != null && int.TryParse(parameters["maxPointsPerCurve"].ToString(), out int mpc))
+                    _handler.MaxPointsPerCurve = Math.Max(0, mpc);
+
+                bool countAll = true;
+                if (parameters?["countAll"] != null)
+                    bool.TryParse(parameters["countAll"].ToString(), out countAll);
+                _handler.CountAll = countAll;
+
                 if (RaiseAndWaitForCompletion(60000))
                 {
                     return _handler.Result;

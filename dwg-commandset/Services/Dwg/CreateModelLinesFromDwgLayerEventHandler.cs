@@ -55,32 +55,26 @@ namespace RevitMCPCommandSet.Services.Dwg
                     return;
                 }
 
-                // Pass 1: collect curves on the requested layer (world geometry).
+                // Pass 1: collect curves on the requested layer (world geometry,
+                // depth-capped walk - see DwgCurveSource.WalkGeometry for the
+                // stack-overflow rationale).
                 var collected = new List<Curve>();
                 var zValues = new List<double>();
                 string layerF = Layer.Trim();
+                var walkStats = new DwgCurveSource.GeometryWalkStats();
 
-                void Walk(GeometryElement ge)
-                {
-                    foreach (var o in ge)
+                DwgCurveSource.WalkGeometry(
+                    target.get_Geometry(new Options()),
+                    o =>
                     {
-                        if (o is GeometryInstance ngi)
-                        {
-                            var inst = ngi.GetInstanceGeometry();
-                            if (inst != null) Walk(inst);
-                        }
-                        else if (o is Curve cv)
-                        {
-                            string layer = DwgCurveSource.LayerName(doc, cv);
-                            if (!string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) continue;
-                            collected.Add(cv);
-                            try { zValues.Add(cv.GetEndPoint(0).Z); } catch { }
-                        }
-                    }
-                }
-
-                var geo = target.get_Geometry(new Options());
-                if (geo != null) Walk(geo);
+                        var cv = o as Curve;
+                        if (cv == null) return;
+                        string layer = DwgCurveSource.LayerName(doc, cv);
+                        if (!string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) return;
+                        collected.Add(cv);
+                        try { zValues.Add(cv.GetEndPoint(0).Z); } catch { }
+                    },
+                    walkStats);
 
                 if (collected.Count == 0)
                 {
@@ -177,6 +171,7 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["asArc"] = arcCount,
                     ["asPolyline"] = polyCount,
                     ["truncated"] = collected.Count > MaxLines,
+                    ["depthCapped"] = walkStats.DepthCapped,
                     ["createdIds"] = createdIds,
                     ["suppressedMessages"] = preprocessor.Log
                 };

@@ -20,6 +20,21 @@ namespace RevitMCPCommandSet.Services.Dwg
         public string LayerFilter { get; set; }
         public int MaxCurves { get; set; } = 500;
 
+        /// <summary>Tessellate each returned curve (default). When false, only
+        /// type/layer/endpoint data is returned - avoids pathological spline
+        /// tessellation on hostile DWGs.</summary>
+        public bool IncludeTessellation { get; set; } = true;
+
+        /// <summary>Cap on tessellation points per curve (0 = unlimited).
+        /// Excess points are omitted and "tessellatedTruncated" is set.</summary>
+        public int MaxPointsPerCurve { get; set; } = 0;
+
+        /// <summary>When true (default) the walk traverses the entire DWG
+        /// geometry tree even past MaxCurves so layer totals are complete.
+        /// When false the walk stops once MaxCurves is reached - faster and
+        /// less exposed on huge DWGs, but layer counts are partial.</summary>
+        public bool CountAll { get; set; } = true;
+
         public object Result { get; private set; }
 
         public bool WaitForCompletion(int timeoutMilliseconds = 60000)
@@ -104,83 +119,93 @@ namespace RevitMCPCommandSet.Services.Dwg
 
                 double[] P(XYZ p) => new double[] { p.X, p.Y, p.Z };
 
-                void Walk(GeometryElement ge)
+                // Depth-capped walk (see DwgCurveSource.WalkGeometry): a
+                // pathological DWG crashed Revit 2024.3.6 with a native stack
+                // overflow inside GetInstanceGeometry()/Tessellate(); managed
+                // try/catch cannot intercept that, so nesting is bounded here.
+                var walkStats = new DwgCurveSource.GeometryWalkStats();
+
+                Action<GeometryObject> visit = o =>
                 {
-                    foreach (var o in ge)
+                    var cv = o as Curve;
+                    if (cv == null) return;
+
+                    string layer = DwgCurveSource.LayerName(doc, cv);
+                    if (layer.IndexOf("Sketch", StringComparison.OrdinalIgnoreCase) >= 0) return;
+                    if (layerF != null && !string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) return;
+
+                    totalCurves++;
+                    if (layerCounts.ContainsKey(layer)) layerCounts[layer]++; else layerCounts[layer] = 1;
+                    if (curves.Count >= MaxCurves) { truncated = true; return; }
+
+                    try
                     {
-                        if (o is GeometryInstance ngi)
+                        var j = new Dictionary<string, object>();
+                        j["type"] = cv.GetType().Name;
+                        j["layer"] = layer;
+
+                        if (IncludeTessellation)
                         {
-                            var inst = ngi.GetInstanceGeometry();
-                            if (inst != null) Walk(inst);
+                            var tess = new List<double[]>();
+                            int omitted = 0;
+                            foreach (var p in cv.Tessellate())
+                            {
+                                if (MaxPointsPerCurve > 0 && tess.Count >= MaxPointsPerCurve) { omitted++; continue; }
+                                tess.Add(P(p));
+                            }
+                            j["tessellated"] = tess;
+                            if (omitted > 0) j["tessellatedTruncated"] = omitted;
                         }
-                        else if (o is Curve cv)
+
+                        bool hasEnds = false; XYZ s = null, e = null;
+                        try { s = cv.GetEndPoint(0); e = cv.GetEndPoint(1); hasEnds = true; } catch { }
+                        if (hasEnds)
                         {
-                            string layer = DwgCurveSource.LayerName(doc, cv);
-                            if (layer.IndexOf("Sketch", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                            if (layerF != null && !string.Equals(layer, layerF, StringComparison.OrdinalIgnoreCase)) continue;
-
-                            totalCurves++;
-                            if (layerCounts.ContainsKey(layer)) layerCounts[layer]++; else layerCounts[layer] = 1;
-                            if (curves.Count >= MaxCurves) { truncated = true; continue; }
-
-                            try
-                            {
-                                var j = new Dictionary<string, object>();
-                                j["type"] = cv.GetType().Name;
-                                j["layer"] = layer;
-                                var tess = new List<double[]>();
-                                foreach (var p in cv.Tessellate()) tess.Add(P(p));
-                                j["tessellated"] = tess;
-
-                                bool hasEnds = false; XYZ s = null, e = null;
-                                try { s = cv.GetEndPoint(0); e = cv.GetEndPoint(1); hasEnds = true; } catch { }
-                                if (hasEnds)
-                                {
-                                    double len = 0; try { len = cv.ApproximateLength; } catch { }
-                                    j["length"] = len;
-                                    j["start"] = P(s);
-                                    j["end"] = P(e);
-                                    XYZ dir = e - s;
-                                    double dl = dir.GetLength();
-                                    if (dl > 1e-9) j["direction"] = new double[] { dir.X / dl, dir.Y / dl, dir.Z / dl };
-                                }
-
-                                if (cv is Arc arc)
-                                {
-                                    j["center"] = P(arc.Center);
-                                    j["radius"] = arc.Radius;
-                                    XYZ n = arc.Normal;
-                                    j["normal"] = new double[] { n.X, n.Y, n.Z };
-                                    j["isFullCircle"] = !hasEnds;
-                                }
-                                else if (cv is Ellipse el)
-                                {
-                                    j["center"] = P(el.Center);
-                                    j["radiusX"] = el.RadiusX;
-                                    j["radiusY"] = el.RadiusY;
-                                    XYZ n2 = el.Normal;
-                                    j["normal"] = new double[] { n2.X, n2.Y, n2.Z };
-                                    j["isFullEllipse"] = !hasEnds;
-                                }
-
-                                curves.Add(j);
-                            }
-                            catch (Exception ex)
-                            {
-                                curves.Add(new Dictionary<string, object>
-                                {
-                                    ["type"] = cv.GetType().Name,
-                                    ["layer"] = layer,
-                                    ["error"] = ex.Message
-                                });
-                            }
+                            double len = 0; try { len = cv.ApproximateLength; } catch { }
+                            j["length"] = len;
+                            j["start"] = P(s);
+                            j["end"] = P(e);
+                            XYZ dir = e - s;
+                            double dl = dir.GetLength();
+                            if (dl > 1e-9) j["direction"] = new double[] { dir.X / dl, dir.Y / dl, dir.Z / dl };
                         }
+
+                        if (cv is Arc arc)
+                        {
+                            j["center"] = P(arc.Center);
+                            j["radius"] = arc.Radius;
+                            XYZ n = arc.Normal;
+                            j["normal"] = new double[] { n.X, n.Y, n.Z };
+                            j["isFullCircle"] = !hasEnds;
+                        }
+                        else if (cv is Ellipse el)
+                        {
+                            j["center"] = P(el.Center);
+                            j["radiusX"] = el.RadiusX;
+                            j["radiusY"] = el.RadiusY;
+                            XYZ n2 = el.Normal;
+                            j["normal"] = new double[] { n2.X, n2.Y, n2.Z };
+                            j["isFullEllipse"] = !hasEnds;
+                        }
+
+                        curves.Add(j);
                     }
-                }
+                    catch (Exception ex)
+                    {
+                        curves.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = cv.GetType().Name,
+                            ["layer"] = layer,
+                            ["error"] = ex.Message
+                        });
+                    }
+                };
 
                 var options = new Options();
                 var geo = target.get_Geometry(options);
-                if (geo != null) Walk(geo);
+                DwgCurveSource.WalkGeometry(
+                    geo, visit, walkStats,
+                    cancelled: () => !CountAll && curves.Count >= MaxCurves);
 
                 var layerArr = new List<Dictionary<string, object>>();
                 foreach (var kv in layerCounts.OrderBy(k => k.Key))
@@ -199,6 +224,8 @@ namespace RevitMCPCommandSet.Services.Dwg
                     ["totalCurves"] = totalCurves,
                     ["returnedCurves"] = curves.Count,
                     ["truncated"] = truncated,
+                    ["depthCapped"] = walkStats.DepthCapped,
+                    ["countAll"] = CountAll,
                     ["layerCount"] = layerCounts.Count,
                     ["layers"] = layerArr,
                     ["curves"] = curves
