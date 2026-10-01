@@ -2,11 +2,31 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import type { ToolHandle } from "../utils/ToolAvailability.js";
 
-export async function registerTools(server: McpServer) {
+export async function registerTools(
+  server: McpServer
+): Promise<Map<string, ToolHandle>> {
   // Get the current file's directory path
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
+
+  // Capture the RegisteredTool handle returned by every server.tool() call so
+  // dynamic tool advertisement can enable/disable tools later. Tool files
+  // register by calling server.tool(name, ...); wrapping the method keeps the
+  // capture in one place instead of threading handles through 40 files.
+  const handles = new Map<string, ToolHandle>();
+  const originalTool = (server.tool as (...args: unknown[]) => unknown).bind(server);
+  (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (
+    ...args: unknown[]
+  ) => {
+    const handle = originalTool(...args);
+    const name = args[0];
+    if (typeof name === "string") {
+      handles.set(name, handle as ToolHandle);
+    }
+    return handle;
+  };
 
   // Read all files in the tools directory
   const files = fs.readdirSync(__dirname);
@@ -45,4 +65,7 @@ export async function registerTools(server: McpServer) {
       console.error(`Error registering tool ${file}:`, error);
     }
   }
+
+  (server as unknown as { tool: unknown }).tool = originalTool;
+  return handles;
 }

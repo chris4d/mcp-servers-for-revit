@@ -108,13 +108,22 @@ namespace revit_mcp_plugin.Core
             // Register plugin built-ins (hot reload entry point).
             _commandRegistry.RegisterCommand(new revit_mcp_plugin.Commands.ReloadCommandSetsCommand(_uiApp));
 
+            // Register plugin built-in (tool advertisement introspection).
+            _commandRegistry.RegisterCommand(new revit_mcp_plugin.Commands.GetRegisteredCommandsCommand(_commandRegistry as RevitCommandRegistry));
+
             // First-run guidance: nothing is dispatchable until the user enables
-            // commands in Settings (check -> Save) - point them there.
+            // commands in Settings (check -> Save) - point them there. Plugin
+            // built-ins are always registered and don't count as loaded commands.
             var concreteRegistry = _commandRegistry as RevitCommandRegistry;
             bool hasCommands = false;
             if (concreteRegistry != null)
             {
-                foreach (var name in concreteRegistry.GetRegisteredCommands()) { hasCommands = true; break; }
+                foreach (var name in concreteRegistry.GetRegisteredCommands())
+                {
+                    if (name == "reload_command_set" || name == "get_registered_commands") continue;
+                    hasCommands = true;
+                    break;
+                }
             }
             if (!hasCommands)
             {

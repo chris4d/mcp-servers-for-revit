@@ -1,4 +1,5 @@
 import * as net from "net";
+import { isCommandAvailable, REGISTERED_COMMANDS_METHOD } from "./ToolAvailability.js";
 
 export class RevitClientConnection {
   host: string;
@@ -93,6 +94,23 @@ export class RevitClientConnection {
   public sendCommand(command: string, params: any = {}): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
+        // Dynamic tool advertisement: don't dispatch commands the plugin has
+        // reported as unregistered - fail with an actionable message instead
+        // of a bare JSON-RPC Method-not-found from the plugin.
+        if (
+          command !== REGISTERED_COMMANDS_METHOD &&
+          !isCommandAvailable(command)
+        ) {
+          reject(
+            new Error(
+              `Command '${command}' is not enabled in the current Revit session ` +
+                `(command set not loaded or disabled). Enable it in the Revit MCP ` +
+                `Settings window or run reload_command_set, then retry.`
+            )
+          );
+          return;
+        }
+
         if (!this.isConnected) {
           this.connect();
         }

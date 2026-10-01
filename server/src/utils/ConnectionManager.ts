@@ -1,4 +1,5 @@
 import { RevitClientConnection } from "./SocketClient.js";
+import { refreshVia } from "./ToolAvailability.js";
 
 // Mutex to serialize all Revit connections - prevents race conditions
 // when multiple requests are made in parallel
@@ -50,6 +51,11 @@ export async function withRevitConnection<T>(
         }, 5000);
       });
     }
+
+    // Dynamic tool advertisement: pull a registry snapshot when the cached one
+    // is missing/stale. Never fatal - on failure the full tool list stays
+    // advertised and the operation proceeds as before.
+    await refreshVia(revitClient);
 
     // Perform the operation
     return await operation(revitClient);

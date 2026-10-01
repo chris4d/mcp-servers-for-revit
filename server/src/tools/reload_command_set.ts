@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
+import { invalidate } from "../utils/ToolAvailability.js";
 
 export function registerReloadCommandSetTool(server: McpServer) {
   server.tool(
@@ -19,6 +20,9 @@ export function registerReloadCommandSetTool(server: McpServer) {
             assemblyName: args.assemblyName ?? "",
           });
         });
+        // The registry may have changed - re-sync the advertised tool list on
+        // the next connection (cheap TTL miss) instead of trusting stale state.
+        invalidate();
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
         };
