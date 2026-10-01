@@ -9,12 +9,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `reload_command_set` built-in plugin command + MCP tool: live-reload of command set DLLs
-  after a build, without restarting Revit. Command set assemblies are byte-loaded
-  (SHA-256 hash cached) so the files on disk are never locked by Revit.
-  (`feature/live-command-reload`, `f3d6ea2`)
+- Dynamic tool advertisement: the plugin serves its registered-command list
+  through a new `get_registered_commands` built-in, and the MCP server folds
+  the advertised `tools/list` to match — Revit-backed tools whose command is
+  not registered are disabled/hidden and calls fail with a clear "not enabled"
+  error. Offline behavior stays stable (while the plugin is unreachable the
+  full list is advertised); plugins predating `get_registered_commands` are
+  probed once and then left on the full list. Also batch-notifies
+  `tools/list_changed` (one notification per availability change, not one per
+  tool).
+- DWG geometry walk safety: shared depth-capped walk (`DwgCurveSource.WalkGeometry`,
+  `MaxGeometryWalkDepth = 50`) used by all four recursive geometry walks
+  (extract curves, model lines, poche walls, layer collection). Hardens against
+  the SMS-SEA-L08 crash (Revit 2024.3.6, `0xc00000fd` native stack overflow in
+  Revit's `Utility.dll` after `extract_dwg_curves` on a pathological DWG).
+- `extract_dwg_curves` params: `includeTessellation` (default `true`),
+  `maxPointsPerCurve` (default 0 = unlimited; excess points omitted with
+  `tessellatedTruncated` count), `countAll` (default `true`; `false` stops the
+  walk at `maxCurves`, making layer totals partial). Results now carry
+  `depthCapped` when the walk hit the depth limit.
+- `send_code_to_revit` Roslyn conflict guard: advisory preflight surfaces
+  assembly-conflict warnings in the result envelope (`warnings`; also logged to
+  `%TEMP%\mcp_compile_conflicts.log`), and bind-type failures (FileLoad/
+  MissingMethod/TypeLoad/BadImageFormat) are classified into an explicit
+  `"Compile subsystem unavailable — Do NOT retry"` error. The server tool turns
+  that into a stop signal for agents.
+
+### Fixed
+
+- Resolver hook (`CommandSetLoader`) no longer returns name-matched,
+  version-mismatched assemblies for versioned requests (CLR does not reliably
+  discard them — they would poison other add-ins' late resolutions). Name-match
+  fallback now applies only to simple-name (version-less) requests.
+- First-run prompt logic counted plugin built-ins as loaded commands, so the
+  "enable commands in Settings" prompt never showed; built-ins are now excluded
+  from the check.
+- Removed three empty placeholder tool files (`modify_element.ts`,
+  `search_modules.ts`, `use_module.ts`) that produced register-time warnings.
+
+## [1.1.8] - 2026-09-24
+
+### Fixed
+
+- Installer: `ReplaceNpxServerEntry` could corrupt AI-client configs with an
+  orphaned key prefix; added a pre-save JSON sanity guard + logging and a
+  15-assertion harness (`installer/test-client-config-logic.ps1`) (`6aad2e5`).
+
+## [1.1.7] - 2026-09-24
+
+### Added
+
+- `reload_command_set` built-in plugin command + MCP tool: live-reload of
+  command set DLLs after a build, without restarting Revit. Command set
+  assemblies are byte-loaded (SHA-256 hash cached) so files on disk are never
+  locked by Revit; `RevitMCPCommandSet.dll` stays LoadFrom-resident (Roslyn
+  sibling probing) and needs a Revit restart to refresh (`f3d6ea2`, `88da0ab`).
+- DWG poche wall extraction quality series (scorecard F1 0.78 → 0.85):
+  pocket-door slot/strip culling, `MergeGapFt` sweeps (→ 3.0) with
+  join-failure retry (`DisallowWallJoinAtEnd`), post-merge fragment/band/stub
+  dedup, end-extension + junction-evidence bridging, even-odd hatch-hole
+  containment + face-level run pairing (kills phantom walls across cavities)
+  (`fdba0e5`, `13c328f`, `389545c`, `9138de6`, `5c1ea64`, `a0ede80`,
+  `5174e67`, `0d1c07a`, `1dc35e0`).
+- Pure geometry core (`dwg-commandset/Geometry`) with behavior-locked TUnit
+  test suite; wall scorecard scorer (`scripts/score-walls.ps1`) + golden-target
+  fixtures (`05b738b`, `0e3bb63`, `347cf96`, `57facee`).
+- AssemblyResolve hook: probe command-set directories for byte-loaded
+  assemblies, exact-version preference, `legacy\` subfolder for exact-identity
+  older deps, resolver debug trace (`db2162a`, `6d3a0da`, `41fb29c`).
+- `commandRegistry.json` seed template (38 commands, all enabled) (`d6674f4`).
+
+### Changed
+
 - Per-wall `SubTransaction` in the poche build loop — one un-buildable wall no
-  longer rolls back the whole batch (`0203a67`).
+  longer rolls back the whole batch (`0203a67`); per-wall transactions with
+  forced-modal handling off + app-level `FailuresProcessing` delegate that
+  suppresses error modals (`37cc705`, `4c77137`); per-stage stopwatch timings,
+  per-pair build-failure capture, and `revitFailureLog` in the response
+  (`3365cbf`, `13c328f`).
+
+### Fixed
+
+- Doubled backslashes shown in AI-client captions (Inno Pascal does not treat
+  backslash as an escape) (`dab7229`).
+
+## [1.1.6] - 2026-09-23
+
+### Changed
+
+- Scrubbed and translated all Chinese comments and user-facing strings to
+  English across commandset, plugin, and server; locale-dependent
+  parameter/type-name adaptors left untouched (`5f4a799`, `81218be`, `efb4d5e`).
+
+## [1.1.5] - 2026-09-22
+
+### Added
+
+- `send_code_to_revit` execution-contract tool guidance, snippet-relative
+  1-based compile-error line numbers, and an explicit failure envelope
+  (`Code failed to execute.`) instead of a success envelope (`bb2bfbb`).
+
+## [1.1.4] - 2026-09-16
+
+### Added
+
+- Installer bundles a portable Node runtime + stdio shim; all AI-client entries
+  (including AnythingLLM) run via `cmd /c` shim — no system Node required on
+  target machines (`1736244`).
+- Registry self-heal at startup, name-drift diagnostics, and lossless Settings
+  Save (`9efad63` via `d77f5cf`).
+- Live state indicator on the Revit MCP Switch button with modeless toast
+  (`1698994` via `bc86728`).
+
+## [1.1.3] - 2026-09-16
+
+### Added
+
+- Release pipeline: standalone command-set zips + bundled server zip asset
+  attached to releases; extra command sets (dwg/offaxis) build for Revit
+  2024–2026 only (2024+ APIs) (`7c14691`, `d385e6d`).
+
+### Fixed
+
+- Installer `SkipPluginBuild` path no longer skips staging the Server
+  directory (`e3ee942` via `172d8f5`).
 
 ## [1.1.2] - 2026-09-04
 
