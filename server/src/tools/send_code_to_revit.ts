@@ -25,6 +25,8 @@ export function registerSendCodeToRevitTool(server: McpServer) {
       "- Keep code complete and self-contained on first attempt: it is compiled fresh each call, so unresolved identifiers fail compilation.",
       "",
       "Compile errors are reported with 1-based line numbers relative to the submitted snippet.",
+      "",
+      "If the result carries a 'warnings' field mentioning assembly version conflicts, or the error begins with 'Compile subsystem unavailable', the compile chain collided with another add-in's preloaded assemblies: do NOT keep retrying - fall back to purpose-built tools and tell the user to restart Revit.",
     ].join("\n"),
     {
       code: z
@@ -61,12 +63,21 @@ export function registerSendCodeToRevitTool(server: McpServer) {
           typeof response === "object" &&
           (response as Record<string, unknown>).success === true;
 
+        const errMsg = !success && response && typeof response === "object"
+          ? String((response as Record<string, unknown>).errorMessage ?? "")
+          : "";
+        const compileSubsystemDown = errMsg.startsWith("Compile subsystem unavailable");
+
         return {
           content: [
             {
               type: "text",
               text: `${
-                success ? "Code execution successful!" : "Code failed to execute."
+                success
+                  ? "Code execution successful!"
+                  : compileSubsystemDown
+                    ? "Compile subsystem unavailable - assembly conflict. STOP calling send_code_to_revit for the rest of this Revit session and use purpose-built tools or the off-axis/dwg tools instead."
+                    : "Code failed to execute."
               }\nResult: ${JSON.stringify(response, null, 2)}`,
             },
           ],

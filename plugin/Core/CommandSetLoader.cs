@@ -30,6 +30,13 @@ namespace revit_mcp_plugin.Core
         /// directories containing known command assemblies + their sibling folders.
         /// Required because byte-loaded assemblies have no CodeBase for the
         /// default loader to probe dependencies (e.g. Microsoft.CodeAnalysis).
+        /// Each probe dir may also carry a "legacy\" subfolder holding
+        /// exact-identity copies of dependencies requested with older assembly
+        /// versions (e.g. System.Runtime.CompilerServices.Unsafe 4.0.4.1
+        /// alongside the folder's 6.0.0.0 copy). The legacy folder is
+        /// intentionally NOT staged by the build/installer - it is hand-placed
+        /// in a deployed plugin folder only when a concrete binding needs it;
+        /// the hook simply honors it when present.
         /// </summary>
         public static void EnsureResolveHook(params string[] probeDirectories)
         {
@@ -57,11 +64,18 @@ namespace revit_mcp_plugin.Core
 
                 // Strip the RETARGETED/redirected version for logging clarity —
                 // then look for a candidate whose assembly identity matches the
-                // requested version when possible; a mismatched identity returned
-                // from AssemblyResolve is DISCARDED by the netfx JIT binder, so
-                // fall back to name-match only when no exact fit exists.
+                // requested version when possible. A version-mismatched
+                // assembly returned from AssemblyResolve is NOT reliably
+                // discarded by the binder (the CLR frequently accepts it as
+                //-is), so a name-match fallback for a VERSIONED request would
+                // poison other add-ins' late resolutions with our older
+                // copies - e.g. substituting our System.Memory 4.0.1.2 for
+                // another add-in's requested 4.0.5.0. Name-match is therefore
+                // allowed only for simple-name requests (no version).
+                // See AGENTS.md (Roslyn conflicts / resolver hook).
                 string exactMatch = null;
                 string nameMatch = null;
+                bool allowNameMatch = requested.Version == null;
                 foreach (var dir in unionOfProbeDirs(probeDirectories))
                 {
                     // Main folder first: candidate file may satisfy exact or name match.
@@ -88,7 +102,7 @@ namespace revit_mcp_plugin.Core
                                 exactMatch = candidate;
                                 break;
                             }
-                            if (nameMatch == null && !candidate.Contains("\\legacy\\"))
+                            if (allowNameMatch && nameMatch == null && !candidate.Contains("\\legacy\\"))
                             {
                                 nameMatch = candidate;
                             }
