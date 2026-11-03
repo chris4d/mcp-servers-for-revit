@@ -38,6 +38,12 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Test installer config logic
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/test-opencode-config.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/test-client-config-logic.ps1
+
       # ---------------------------------------------------------------
       # Build MCP Server (TypeScript)
       # ---------------------------------------------------------------
@@ -46,6 +52,7 @@ jobs:
         run: |
           npm ci
           npm run build
+          npm run test:smoke
 
       # ---------------------------------------------------------------
       # Build Plugin + CommandSet via combined solution

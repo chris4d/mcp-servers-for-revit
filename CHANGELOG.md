@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Installer: the AI-client config JSON sanity guard rejected **every** config
+  containing a comma (`Pos(',', S)` instead of `Pos(',,', S)`), so Claude
+  Desktop, Cursor, and AnythingLLM config writes all failed with "Unable to
+  update the … AI-client config safely" and the file was left untouched. Most
+  visible with AnythingLLM, whose checkbox is auto-selected whenever the app is
+  installed. The rejection dialog now directs the user to contact the developer
+  with the installer log.
+- Installer: OpenCode detection emitted all fields on one space-joined line
+  (PowerShell parsed the unparenthesized `+` expressions in the `@(...)` array
+  as a single string), so the installer saw `installed=1 version=...` and
+  treated OpenCode as absent. Detection now writes one field per line; a
+  regression assertion covers the line count.
+- Installer: custom completion and config-error dialogs now use
+  `SuppressibleMsgBox`, so `/VERYSILENT /SUPPRESSMSGBOXES` no longer hangs on
+  the final "Installation complete" message box.
+- Installer: removed the empty vertical gap left by the hidden OpenCode V1/V2
+  sub-checkbox when the OpenCode version is known.
+
+### Added
+
+- OpenCode 2 support: the installer detects the CLI or the desktop app (including
+  its bundled `opencode-cli.exe`), writes the native `mcp.servers` shape with
+  `codemode: false` (direct tool listing instead of Code Mode), honors
+  `OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME`, and preserves `.jsonc` comments
+  and trailing commas. Known versions auto-select the shape; unknown versions
+  prompt; no OpenCode installation skips the config entirely. Existing legacy
+  configs are migrated to native when OpenCode 2 is detected, and native configs
+  are converted back to legacy when OpenCode 1 is detected.
+- `installer/opencode-config.ps1` replaces the Inno string surgery for OpenCode
+  with a validated, atomic JSONC-aware editor. Uninstall removes the Revit
+  entry from both `opencode.json` and `opencode.jsonc` without disturbing other
+  servers.
+- Tests: `installer/test-opencode-config.ps1` (CI job) and
+  `server/test/smoke.mjs` (`npm run test:smoke`). Optional
+  `installer/verify-opencode-v2.ps1` + manual `opencode-v2-smoke` workflow
+  validate the real OpenCode 2 CLI.
+
 ## [1.1.9] - 2026-09-30
 
 ### Added

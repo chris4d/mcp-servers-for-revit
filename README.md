@@ -101,6 +101,37 @@ Restart Claude Desktop. When you see the hammer icon, the MCP server is connecte
 
 ![Claude Desktop connection](./assets/claude.png)
 
+**OpenCode 2**
+
+The Windows installer detects OpenCode 2 from either the `opencode` CLI or the desktop app (`%LOCALAPPDATA%\Programs\ai.opencode.desktop` + its bundled `opencode-cli.exe`). It writes the native `mcp.servers` shape with Code Mode disabled for Revit tools. The resulting config is:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "mcp-server-for-revit": {
+        "type": "local",
+        "command": ["cmd", "/c", "C:\\Program Files (x86)\\MCP Servers for Revit\\Server\\run-mcp-server.cmd"],
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+OpenCode 1 gets the legacy `mcp.mcp-server-for-revit` shape with `enabled: true`. If OpenCode is detected but its version cannot be determined, the installer shows a V1/V2 choice. If no OpenCode installation is detected, the installer skips OpenCode configuration entirely. An existing legacy config is migrated to native when OpenCode 2 is detected.
+
+Config location: `%USERPROFILE%\.config\opencode\opencode.json` or `.jsonc`, unless `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME` is set. OpenCode 2 loads both files and `.jsonc` wins for overlapping keys.
+
+Verify with the CLI:
+
+```bash
+opencode mcp list
+```
+
+For the desktop app, open OpenCode and use `/mcps` or ask the agent to call `say_hello` directly.
+
 ## Revit Plugin Setup
 
 If using a release ZIP, the plugin is already included. For manual installation:

@@ -170,7 +170,20 @@ $fixtureShim = @'
 }
 '@
 
-$fixtureBad = Get-Content (Join-Path $PSScriptRoot '..\opencode.json.BAD') -Raw
+$badFixturePath = Join-Path $PSScriptRoot '..\opencode.json.BAD'
+if (Test-Path $badFixturePath) {
+    $fixtureBad = Get-Content $badFixturePath -Raw
+} else {
+    $fixtureBad = @"
+{
+  "mcp": {
+    "mcp-server-for-revit": "mcp-server-for-revit": {
+      "type": "local"
+    }
+  }
+}
+"@
+}
 
 # --- assertions ---------------------------------------------------------
 
@@ -216,6 +229,72 @@ if (Test-ConfigParseOk (Clear-TrailingCommas $mutated)) {
 else { $saved = 'KEPT-ORIGINAL' }
 Assert ($saved -eq 'KEPT-ORIGINAL') 'guarded save: insane mutation leaves original file untouched'
 Remove-Item $sanityGuardTemp -Force -ErrorAction SilentlyContinue
+
+# 7. Freshly-created client configs (the installer's own templates) contain
+#    ordinary separators/array commas and must pass sanity. This is the
+#    regression for the guard that rejected every config containing a comma.
+$fixtureCreatedAnythingLLM = @'
+{
+    "mcpServers": {
+        "mcp-server-for-revit": {
+            "command": "cmd",
+            "args": ["/c", "C:\\Program Files\\MCP Servers for Revit\\Server\\run-mcp-server.cmd"]
+        }
+    }
+}
+'@
+Assert (Test-ConfigParseOk $fixtureCreatedAnythingLLM) 'sanity: created AnythingLLM template accepted'
+try { $null = $fixtureCreatedAnythingLLM | ConvertFrom-Json; Assert $true 'sanity: created AnythingLLM template parses as JSON' }
+catch { Assert $false 'sanity: created AnythingLLM template parses as JSON' }
+
+$fixtureCreatedClaude = @'
+{
+    "mcpServers": {
+        "mcp-server-for-revit": {
+            "command": "cmd",
+            "args": ["/c", "C:\\Program Files\\MCP Servers for Revit\\Server\\run-mcp-server.cmd"]
+        },
+        "playwright": {
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp"]
+        }
+    }
+}
+'@
+Assert (Test-ConfigParseOk $fixtureCreatedClaude) 'sanity: created multi-entry template accepted'
+
+# 8. Doubled commas (the failure mode the guard exists to catch) still fail.
+Assert (-not (Test-ConfigParseOk '{ "a": 1,, "b": 2 }')) 'sanity: doubled-comma content rejected'
+
+# 9. Generator drift guard: decode the ConfigParseOK function actually emitted
+#    by build-installer.ps1 and assert its comma check is the doubled-comma
+#    form. The harness port above previously diverged from the generator,
+#    which is why CI passed while the shipped installer rejected all commas.
+function Get-GeneratedPascal { param([string]$FunctionName)
+    $genLines = Get-Content (Join-Path $PSScriptRoot 'build-installer.ps1')
+    $start = -1
+    for ($i = 0; $i -lt $genLines.Count; $i++) {
+        if ($genLines[$i].Contains("`$issLines += 'function $FunctionName")) { $start = $i; break }
+    }
+    if ($start -lt 0) { return $null }
+    $prefix = "`$issLines += '"
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = $start; $i -lt $genLines.Count; $i++) {
+        $line = $genLines[$i]
+        if (-not $line.StartsWith($prefix)) { break }
+        $body = $line.Substring($prefix.Length)
+        if ($body.EndsWith("';")) { $body = $body.Substring(0, $body.Length - 2) }
+        elseif ($body.EndsWith("'")) { $body = $body.Substring(0, $body.Length - 1) }
+        [void]$sb.AppendLine($body.Replace("''", "'"))
+        if ($body -eq 'end;') { break }
+    }
+    return $sb.ToString()
+}
+
+$emittedParseOk = Get-GeneratedPascal 'ConfigParseOK'
+Assert ($null -ne $emittedParseOk) 'generator: ConfigParseOK function found'
+Assert ($emittedParseOk.Contains("Pos(',,', S)")) 'generator: comma check uses doubled-comma form'
+Assert (-not $emittedParseOk.Contains("Pos(',', S)")) 'generator: comma check does not reject every comma'
 
 Write-Output ''
 if ($failed -eq 0) { Write-Output 'ALL ASSERTIONS PASSED'; exit 0 }

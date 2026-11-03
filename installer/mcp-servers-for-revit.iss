@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.1.9
+AppVersion=1.2.1
 AppPublisher=MCP Servers for Revit
 AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
@@ -29,6 +29,8 @@ Source: "staged\2026\*"; DestDir: "{app}\RevitPlugins\2026"; Flags: recursesubdi
 Source: "staged\Server\*"; DestDir: "{app}\Server"; Flags: recursesubdirs ignoreversion
 Source: "staged\node\node.exe"; DestDir: "{app}\node"; Flags: ignoreversion
 Source: "run-mcp-server.cmd"; DestDir: "{app}\Server"; Flags: ignoreversion
+Source: "opencode-config.ps1"; DestDir: "{app}\Installer"; Flags: ignoreversion
+Source: "opencode-config.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\Uninstall MCP Servers for Revit"; Filename: "{uninstallexe}"
@@ -42,7 +44,9 @@ const
 var
   Page: TWizardPage;
   SetPage: TWizardPage;
-  ClaudeCB, CursorCB, OpencodeCB, AnythingLLMCB: TNewCheckBox;
+  ClaudeCB, CursorCB, OpencodeCB, OpenCode2CB, AnythingLLMCB: TNewCheckBox;
+  OpenCodeVersion, OpenCodeSource, OpenCodeConfigShape: String;
+  OpenCodeInstalled: Boolean;
 
 var SetCBs: array[0..2] of TNewCheckBox;
 
@@ -54,6 +58,86 @@ end;
 function GetUserProfilePath: String;
 begin
   Result := GetEnv('USERPROFILE');
+end;
+
+function GetOpenCodeConfigDir: String;
+var D: String;
+begin
+  D := GetEnv('OPENCODE_CONFIG_DIR');
+  if D <> '' then Result := D
+  else begin
+    D := GetEnv('XDG_CONFIG_HOME');
+    if D <> '' then Result := D + '\opencode'
+    else Result := GetUserProfilePath + '\.config\opencode';
+  end;
+end;
+
+function DetectOpenCode: Boolean;
+var RC: Integer; Script, OutFile, Line, Key, Value: String; SL: TStringList; I: Integer;
+begin
+  Result := False;
+  OpenCodeInstalled := False;
+  OpenCodeVersion := '';
+  OpenCodeSource := 'none';
+  OpenCodeConfigShape := 'none';
+  try
+    ExtractTemporaryFile('opencode-config.ps1');
+  except
+    Log('WARNING: could not extract opencode detection helper');
+    Exit;
+  end;
+  Script := ExpandConstant('{tmp}\opencode-config.ps1');
+  OutFile := ExpandConstant('{tmp}\opencode-detect.txt');
+  if FileExists(OutFile) then DeleteFile(OutFile);
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -Action Detect -OutputPath "' + OutFile + '"', '', SW_HIDE, ewWaitUntilTerminated, RC) then begin
+    Log('opencode detection helper exit code: ' + IntToStr(RC));
+    if (RC = 0) and FileExists(OutFile) then begin
+      SL := TStringList.Create;
+      try
+        SL.LoadFromFile(OutFile);
+        Log('opencode detection output lines: ' + IntToStr(SL.Count));
+        for I := 0 to SL.Count - 1 do begin
+          Line := SL[I];
+          Log('opencode detect line: ' + Line);
+          if Pos('=', Line) > 0 then begin
+            Key := Copy(Line, 1, Pos('=', Line) - 1);
+            Value := Copy(Line, Pos('=', Line) + 1, Length(Line));
+            if Key = 'installed' then OpenCodeInstalled := Value = '1'
+            else if Key = 'version' then OpenCodeVersion := Value
+            else if Key = 'source' then OpenCodeSource := Value
+            else if Key = 'config' then OpenCodeConfigShape := Value;
+          end;
+        end;
+      finally SL.Free; end;
+      Result := True;
+    end else
+      Log('WARNING: opencode detection output missing or helper failed: ' + OutFile);
+  end else
+    Log('WARNING: failed to launch opencode detection helper');
+  if OpenCodeInstalled then
+    Log('opencode detected: version=' + OpenCodeVersion + ' source=' + OpenCodeSource + ' config=' + OpenCodeConfigShape)
+  else
+    Log('opencode not detected');
+end;
+
+function RunOpenCodeConfig(ActionName: String; NativeMode: Boolean): Integer;
+var RC: Integer; Params, Helper, Shim, Dir: String;
+begin
+  Result := 1;
+  Helper := ExpandConstant('{app}\Installer\opencode-config.ps1');
+  if not FileExists(Helper) then begin
+    Log('WARNING: opencode config helper not found: ' + Helper);
+    Exit;
+  end;
+  Dir := GetOpenCodeConfigDir;
+  Shim := ExpandConstant('{app}\Server\run-mcp-server.cmd');
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + Helper + '" -Action ' + ActionName + ' -ConfigDir "' + Dir + '" -ShimPath "' + Shim + '" -LogPath "' + ExpandConstant('{tmp}\opencode-config.log') + '"';
+  if NativeMode then Params := Params + ' -Native';
+  if Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, RC) then begin
+    Result := RC;
+    Log('opencode config helper exit code: ' + IntToStr(RC));
+  end else
+    Log('WARNING: failed to launch opencode config helper');
 end;
 
 function IsRevitInstalled(Y: String): Boolean;
@@ -175,7 +259,7 @@ begin
   if (S = '') or (S[1] <> '{') or (S[Length(S)] <> '}') then Exit;
   Bad := ServerKey + '": "' + ServerKey;
   if Pos(Bad, S) > 0 then Exit;
-  if Pos(',', S) > 0 then Exit;
+  if Pos(',,', S) > 0 then Exit;
   InQ := False; Esc := False; Depth := 0;
   for I := 1 to Length(S) do begin
     if Esc then begin Esc := False; Continue; end;
@@ -207,7 +291,7 @@ begin
     Log('Saved ' + Client + ' config: ' + P);
   end else begin
     Log('WARNING: ' + Client + ' config edit rejected (would be invalid JSON); file left untouched: ' + P);
-    MsgBox('Unable to update the ' + Client + ' AI-client config safely (the edit would produce invalid JSON). The existing file was left unchanged. You may need to configure the MCP server manually in ' + P, mbError, MB_OK);
+    SuppressibleMsgBox('Unable to update the ' + Client + ' AI-client config safely (the edit would produce invalid JSON). The existing file was left unchanged: ' + P + '. Please contact the developer at https://github.com/chris4d/mcp-servers-for-revit/issues and include the installer log.', mbError, MB_OK, IDOK);
   end;
 end;
 
@@ -221,7 +305,7 @@ begin
     Log('Removed server entry from config: ' + P);
   end else begin
     Log('WARNING: config removal rejected (would be invalid JSON); file left untouched: ' + P);
-    MsgBox('Unable to remove the MCP server entry from an AI-client config safely. The existing file was left unchanged (manual cleanup may be needed in ' + P + ').', mbError, MB_OK);
+    SuppressibleMsgBox('Unable to remove the MCP server entry from an AI-client config safely. The existing file was left unchanged: ' + P + '. Please contact the developer at https://github.com/chris4d/mcp-servers-for-revit/issues and include the installer log.', mbError, MB_OK, IDOK);
   end;
 end;
 
@@ -440,60 +524,22 @@ begin
 end;
 
 procedure ConfigureOpencode;
-var P, C: String; SL: TStringList;
+var RC: Integer; NativeMode: Boolean;
 begin
-  P := GetUserProfilePath + '\\.config\\opencode\\opencode.json';
-  if not FileExists(P) then begin
-    ForceDirectories(ExtractFilePath(P));
-    SL := TStringList.Create;
-    try
-      SL.Add('{');
-      SL.Add('    "$schema": "https://opencode.ai/config.json",');
-      SL.Add('    "mcp": {');
-      SL.Add('        "mcp-server-for-revit": {');
-      SL.Add('            "type": "local",');
-      SL.Add('            "command": ["cmd", "/c", "' + ShimPathJson() + '"],');
-      SL.Add('            "enabled": true');
-      SL.Add('        }');
-      SL.Add('    }');
-      SL.Add('}');
-      GuardedSaveConfig(SL, P, SL.Text, 'opencode');
-    finally SL.Free; end;
-    Log('Created opencode config');
-  end else begin
-    SL := TStringList.Create;
-    try
-      SL.LoadFromFile(P); C := SL.Text;
-      if Pos(ServerKey, C) > 0 then begin
-        ReplaceNpxServerEntry(C, True);
-        GuardedSaveConfig(SL, P, C, 'opencode');
-      Exit;
-      end;
-      StringChangeEx(C, '"mcp": {',
-        '"mcp": {' + #13#10 + '        "mcp-server-for-revit": {' + #13#10 + '            "type": "local",' + #13#10 + '            "command": ["cmd", "/c", "' + ShimPathJson() + '"],' + #13#10 + '            "enabled": true' + #13#10 + '        },', True);
-      GuardedSaveConfig(SL, P, C, 'opencode');
-    finally SL.Free; end;
-  end;
+  if OpenCode2CB <> nil then NativeMode := OpenCode2CB.Checked
+  else if Pos('2.', OpenCodeVersion) = 1 then NativeMode := True
+  else if Pos('1.', OpenCodeVersion) = 1 then NativeMode := False
+  else NativeMode := OpenCodeConfigShape <> 'legacy';
+  RC := RunOpenCodeConfig('Install', NativeMode);
+  if RC <> 0 then
+    SuppressibleMsgBox('Unable to update the opencode config automatically. See the installer log and configure the MCP server manually in ' + GetOpenCodeConfigDir, mbError, MB_OK, IDOK);
 end;
 
 procedure RemoveFromOpencode;
-var P, C: String; SL: TStringList; S, E: Integer;
+var RC: Integer;
 begin
-  P := GetUserProfilePath + '\\.config\\opencode\\opencode.json';
-  if not FileExists(P) then Exit;
-  SL := TStringList.Create;
-  try
-    SL.LoadFromFile(P); C := SL.Text;
-    S := Pos('"mcp-server-for-revit"', C);
-    if S = 0 then Exit;
-    E := Pos('}', Copy(C, S, Length(C)));
-    if E = 0 then Exit;
-    E := S + E - 1;
-    if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
-    Delete(C, S, E - S + 1);
-    CleanTrailingCommas(C);
-    GuardedRemoveConfig(SL, P, C);
-  finally SL.Free; end;
+  RC := RunOpenCodeConfig('Remove', False);
+  if RC <> 0 then Log('WARNING: opencode config removal failed; manual cleanup may be needed');
 end;
 
 procedure CreateCommandSetPage;
@@ -547,19 +593,49 @@ begin
 
   OpencodeCB := TNewCheckBox.Create(WizardForm);
   OpencodeCB.Parent := Page.Surface;
-  OpencodeCB.SetBounds(ScaleX(20), ScaleY(90), ScaleX(400), ScaleY(20));
-  OpencodeCB.Caption := 'opencode (' + GetUserProfilePath + '\.config\opencode\)';
-  OpencodeCB.Checked := DirExists(GetUserProfilePath + '\\.config\\opencode');
+  OpencodeCB.SetBounds(ScaleX(20), ScaleY(90), ScaleX(600), ScaleY(20));
+  if OpenCodeInstalled then begin
+    if OpenCodeVersion <> '' then OpencodeCB.Caption := 'opencode ' + OpenCodeVersion + ' (' + OpenCodeSource + ')'
+    else OpencodeCB.Caption := 'opencode (detected, version unknown)';
+  end else
+    OpencodeCB.Caption := 'opencode (not detected - check to force)';
+  OpencodeCB.Checked := OpenCodeInstalled;
+
+  OpenCode2CB := TNewCheckBox.Create(WizardForm);
+  OpenCode2CB.Parent := Page.Surface;
+  OpenCode2CB.SetBounds(ScaleX(40), ScaleY(112), ScaleX(560), ScaleY(20));
+  OpenCode2CB.Caption := 'Use OpenCode 2 native config (mcp.servers, codemode: false)';
+  OpenCode2CB.Checked := False;
+  OpenCode2CB.Visible := False;
+  if OpenCodeInstalled then begin
+    if OpenCodeVersion <> '' then begin
+      if Pos('2.', OpenCodeVersion) = 1 then OpenCode2CB.Checked := True
+      else if Pos('1.', OpenCodeVersion) = 1 then OpenCode2CB.Checked := False
+      else begin
+        OpenCode2CB.Visible := True;
+        OpenCode2CB.Caption := 'OpenCode version unknown: check for OpenCode 2, uncheck for OpenCode 1';
+        OpenCode2CB.Checked := OpenCodeConfigShape <> 'legacy';
+      end;
+    end else begin
+      OpenCode2CB.Visible := True;
+      OpenCode2CB.Caption := 'OpenCode version unknown: check for OpenCode 2, uncheck for OpenCode 1';
+      OpenCode2CB.Checked := OpenCodeConfigShape <> 'legacy';
+    end;
+  end;
 
   AnythingLLMCB := TNewCheckBox.Create(WizardForm);
   AnythingLLMCB.Parent := Page.Surface;
-  AnythingLLMCB.SetBounds(ScaleX(20), ScaleY(115), ScaleX(400), ScaleY(20));
+  if OpenCode2CB.Visible then
+    AnythingLLMCB.SetBounds(ScaleX(20), ScaleY(140), ScaleX(400), ScaleY(20))
+  else
+    AnythingLLMCB.SetBounds(ScaleX(20), ScaleY(115), ScaleX(400), ScaleY(20));
   AnythingLLMCB.Caption := 'AnythingLLM (' + GetAppDataDir + '\anythingllm-desktop\)';
   AnythingLLMCB.Checked := DirExists(GetAppDataDir + '\\anythingllm-desktop');
 end;
 
 procedure InitializeWizard;
 begin
+  DetectOpenCode;
   CreateCommandSetPage;
   CreateClientPage;
 end;
@@ -573,7 +649,7 @@ procedure ConfigureDetectedClients;
 begin
   if FileExists(GetAppDataDir + '\\Claude\\claude_desktop_config.json') or DirExists(GetAppDataDir + '\\Claude') then ConfigureClaudeDesktop;
   if DirExists(GetUserProfilePath + '\\.cursor') then ConfigureCursor;
-  if DirExists(GetUserProfilePath + '\\.config\\opencode') then ConfigureOpencode;
+  if OpenCodeInstalled then ConfigureOpencode;
   if DirExists(GetAppDataDir + '\\anythingllm-desktop') then ConfigureAnythingLLM;
 end;
 
@@ -596,7 +672,7 @@ begin
       if OpencodeCB.Checked then ConfigureOpencode;
       if AnythingLLMCB.Checked then ConfigureAnythingLLM;
     end;
-    MsgBox('Installation complete.' #13#10 #13#10 'Commands are disabled by default for your control. To expose model commands to AI clients:' #13#10 '1. In Revit, open the plugin Settings page' #13#10 '2. Enable the commands you want, then click Save' #13#10 '3. Click the Revit MCP Switch to start the server', mbInformation, MB_OK);
+    SuppressibleMsgBox('Installation complete.' #13#10 #13#10 'Commands are disabled by default for your control. To expose model commands to AI clients:' #13#10 '1. In Revit, open the plugin Settings page' #13#10 '2. Enable the commands you want, then click Save' #13#10 '3. Click the Revit MCP Switch to start the server', mbInformation, MB_OK, IDOK);
   end;
 end;
 
