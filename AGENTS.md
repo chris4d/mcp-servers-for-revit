@@ -197,9 +197,10 @@ The original Roslyn `.csx` prototype scripts (detectors, fixers, spacing regular
 
 ## Roadmap (next up)
 
-Ordered backlog (v1.1.9 guardrail work + dynamic tool advertisement complete and **unreleased**, CHANGELOG backfilled through 1.1.8):
+Ordered backlog (v1.2.1 released: DWG walk caps, Roslyn conflict guards, dynamic tool advertisement, first-run prompt fix, OpenCode 2 installer/config support, suite alignment):
 
-1. **Next release** — ships the completed work: DWG walk caps + `extract_dwg_curves` params + Roslyn conflict guards + dynamic tool advertisement (§Tool Advertisement) + first-run prompt fix + OpenCode 2 installer/config support. Follow the Release workflow above (`gh release create -R chris4d/mcp-servers-for-revit`).
+1. **v1.2.1 - RELEASED.** Ships the completed work above plus the suite direct-deploy contract, disabled-by-default registry, ownership-aware client uninstall, and 2020-2026 standalone installer.
+
 2. **Out-of-process compile host — DEFERRED (recorded for future development; decided not to pursue in this cycle)**. Design captured from the v1.2 scoping discussion so it can be picked up cold:
    - **Motivation**: removes the ~591 MB Roslyn compile residency from Revit's process; kills the toggle-time `API_ERROR` journal noise (the Roslyn chain leaves the addin folder → nothing for Revit's static checker to flag) and the whole binding-conflict class; compile-path crashes/hangs (Roslyn OOM, parser blowups) take down the host instead of Revit; compile can move off Revit's UI thread (run on the WebSocket dispatch thread *before* raising the ExternalEvent — the 60s wait then wraps only execution).
    - **Shape**: new `compile-host/` project, `RevitMCPCompileHost.exe`, **net48** framework-dependent (proven Roslyn-on-net48 combo, no runtime bloat, works for Revit 2020–2026 since it's outside Revit). JSON-stdio protocol: `{protocolVersion, source, referencePaths[]}` → `{ok, assemblyB64, diagnostics[{line,severity,message}]}`. **Host owns the wrapper template + the 13-line diagnostic remap** (the 1-based snippet-line contract survives verbatim). Plugin sends `AppDomain.CurrentDomain.GetAssemblies()` file paths as the reference set (this preserves the hidden capability: snippets compile against *everything loaded in Revit*, other add-ins included — current code is file-based metadata anyway, so fidelity is identical).
