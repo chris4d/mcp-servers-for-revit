@@ -92,8 +92,8 @@ As of **v1.1.4** the installer additionally **bundles a portable Node runtime** 
 - **Selection**: known version auto-selects the shape (1.x legacy, 2.x native) and hides the native checkbox. Version unknown but OpenCode detected shows the checkbox as a prompt. No OpenCode detected skips OpenCode config entirely (the checkbox can still be forced).
 - **Migration**: installing the native shape removes a legacy Revit entry; installing the legacy shape removes a native Revit entry. Both directions also clean the other config file, preserving unrelated servers/comments.
 - Config dir honors `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME\opencode`, then `%USERPROFILE%\.config\opencode`. OpenCode 2 loads both `opencode.json` and `opencode.jsonc`; `.jsonc` wins for overlapping keys. Native installs target `.jsonc` when it exists (otherwise `.json`); legacy installs target `.json`. Verified against V2 2.2.0: `OPENCODE_CONFIG_DIR` loads `opencode.jsonc` from that directory and `XDG_CONFIG_HOME` sets the config path. `OPENCODE_CONFIG` (a custom config file path) is not edited by this installer.
-- Uninstall removes the Revit entry from both `.json` and `.jsonc` (both shapes) while preserving other servers/comments, even if OpenCode is no longer detected.
-- Tests: `installer/test-opencode-config.ps1` (blocking CI job in `.github/workflows/ci.yml`) covers native/legacy add/update/migrate/remove, detection, `.jsonc` precedence, comments/trailing commas, idempotency, and invalid-config rollback. `installer/verify-opencode-v2.ps1` is the optional real-CLI smoke (manual `opencode-v2-smoke` workflow); desktop-only machines skip it with `/mcps` instructions because `opencode-cli mcp list` only sees the desktop app's shared server while the app is running.
+- Uninstall removes the Revit entry from both `.json` and `.jsonc` (both shapes) while preserving other servers/comments, even if OpenCode is no longer detected. `opencode-config.ps1 -Action Remove -ShimPath <path>` only removes an entry whose command matches that exact shim; a suite-owned entry is left untouched.
+- Tests: `installer/test-opencode-config.ps1` (blocking CI job in `.github/workflows/ci.yml`) covers native/legacy add/update/migrate/remove, detection, `.jsonc` precedence, comments/trailing commas, idempotency, invalid-config rollback, and exact-shim ownership (`Verify`/`Remove`). `installer/verify-opencode-v2.ps1` is the optional real-CLI smoke (manual `opencode-v2-smoke` workflow); desktop-only machines skip it with `/mcps` instructions because `opencode-cli mcp list` only sees the desktop app's shared server while the app is running.
 - `server/test/smoke.mjs` (`npm run test:smoke`) verifies the legacy stdio MCP handshake and `tools/list`; OpenCode 2's default `legacy` protocol uses this path.
 
 ---
@@ -107,6 +107,22 @@ The Node server's tool list is no longer blindly static. The plugin serves its r
 - **Sync points**: startup fire-and-forget probe in `index.ts`; per-connection TTL refresh (60s) in `ConnectionManager.withRevitConnection`; forced re-fetch after `reload_command_set`. A call against a known-missing command fails with an actionable "not enabled in the current Revit session" error (guard in `SocketClient.sendCommand`), on top of the SDK's own `Tool ... disabled` rejection.
 - **Offline/compat stability**: while the plugin is unreachable the full tool list stays advertised (stdio UX must not depend on Revit being online); plugins without `get_registered_commands` are probed once ("Method ... not found"), then left on the full list forever (`pluginTooOld`). Old servers + new plugin also fine (the command is simply never called).
 - **First-run prompt fix** (same change set): the "no commands enabled" check in `SocketService.Initialize` now excludes plugin built-ins — it previously counted `reload_command_set` and never fired.
+
+## Suite direct-deploy contract
+
+The SMS-Toolkit suite is the primary owner. It deploys the plugin/server directly from this repo's pinned release; it must **not** invoke this standalone installer.
+
+- Same software, same `mcp-server-for-revit` client-config key. Do not introduce a distinct name.
+- Ownership is by exact shim path, never by key alone:
+  - suite: `{suite-app}\run-mcp-server.cmd`
+  - standalone: `{app}\Server\run-mcp-server.cmd`
+- Install may reclaim the key (last installer wins). Uninstall removes only an entry whose command matches that installer's own shim. `RemoveFromClaudeDesktop`, `RemoveFromCursor`, `RemoveFromAnythingLLM`, and `opencode-config.ps1 -Action Remove -ShimPath` enforce this.
+- Fresh installs seed `commandRegistry.json` disabled. The plugin's own default registry creation is disabled too; existing registries are preserved on reinstall.
+- Supported Revit years: 2020-2026. 2020-2023 are core-only; 2024-2026 include Dwg/OffAxis.
+- Release artifacts consumed by the suite: per-year plugin zips, bundled server zip, portable Node runtime, launcher shim, `opencode-config.ps1`, `core-manifest.json`, and `commandRegistry.seed.json`.
+- Standalone installer remains the testing/piecemeal-update vehicle. Suite-side client config auto-detection covers Claude Desktop, Cursor, OpenCode 1/2, and AnythingLLM; standalone remains the manual override.
+
+---
 
 ## Off-Axis Toolkit Knowledge (durable)
 

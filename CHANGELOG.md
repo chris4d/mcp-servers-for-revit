@@ -26,9 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the final "Installation complete" message box.
 - Installer: removed the empty vertical gap left by the hidden OpenCode V1/V2
   sub-checkbox when the OpenCode version is known.
+- Plugin: the default `commandRegistry.json` now writes every discovered command
+  as disabled, so fresh deployments (standalone, suite, or manual ZIP) require
+  an explicit user opt-in instead of enabling everything.
+- Installer: client-config uninstall now removes only entries that point at this
+  installer's exact shim path; a suite-owned entry is left untouched. OpenCode
+  `Remove`/`Verify` accept `-ShimPath` and enforce the same ownership rule.
 
 ### Added
 
+- Standalone installer now builds for Revit 2020-2026 (2020-2023 core-only;
+  2024-2026 include Dwg/OffAxis). Release assets also include
+  `opencode-config.ps1`, `core-manifest.json`, and
+  `commandRegistry.seed.json` for suite consumption.
+- Suite direct-deploy contract documented: the SMS-Toolkit suite owns direct
+  deployment and client auto-config; this standalone installer remains the
+  testing/piecemeal-update override.
 - OpenCode 2 support: the installer detects the CLI or the desktop app (including
   its bundled `opencode-cli.exe`), writes the native `mcp.servers` shape with
   `codemode: false` (direct tool listing instead of Code Mode), honors

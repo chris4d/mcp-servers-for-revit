@@ -317,6 +317,42 @@ try {
     $env:XDG_CONFIG_HOME = $oldXdg
 }
 
+$d = New-TestDir
+try {
+    $otherShim = 'C:\Program Files (x86)\Other Installer\Server\run-mcp-server.cmd'
+    $otherConfig = @'
+{
+  "mcp": {
+    "mcp-server-for-revit": {
+      "type": "local",
+      "command": ["cmd", "/c", "C:\\Program Files (x86)\\Other Installer\\Server\\run-mcp-server.cmd"],
+      "enabled": true
+    }
+  }
+}
+'@
+    Set-TestFile $d 'opencode.json' $otherConfig | Out-Null
+    Invoke-Remove -Dir $d -Shim $shim
+    $text = Get-TestFile $d 'opencode.json'
+    Assert ($text.Contains('Other Installer')) 'ownership: suite remove leaves another installer entry'
+    Invoke-Remove -Dir $d -Shim $otherShim
+    $text = Get-TestFile $d 'opencode.json'
+    Assert (-not ($text -match 'mcp-server-for-revit')) 'ownership: owner remove removes its entry'
+
+    Invoke-Install -Dir $d -Shim $shim -IsNative $true
+    $verifyOwned = Join-Path $d 'verify-owned.txt'
+    Invoke-Verify -Dir $d -Shim $shim -OutPath $verifyOwned
+    $ownedLines = Get-Content -LiteralPath $verifyOwned
+    Assert ($ownedLines -contains 'present=1') 'verify: owned entry is present'
+    Assert ($ownedLines -contains 'owned=1') 'verify: owned entry reports owned'
+
+    $verifyOther = Join-Path $d 'verify-other.txt'
+    Invoke-Verify -Dir $d -Shim $otherShim -OutPath $verifyOther
+    $otherLines = Get-Content -LiteralPath $verifyOther
+    Assert ($otherLines -contains 'present=1') 'verify: foreign entry is present'
+    Assert ($otherLines -contains 'owned=0') 'verify: foreign entry is not owned'
+} finally { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+
 Write-Output ''
 if ($failed -eq 0) { Write-Output 'ALL ASSERTIONS PASSED'; exit 0 }
 else { Write-Output "$failed ASSERTION(S) FAILED"; exit 1 }

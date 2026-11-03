@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Install', 'Remove', 'Detect')]
+    [ValidateSet('Install', 'Remove', 'Detect', 'Verify')]
     [string]$Action = 'Install',
     [string]$ConfigDir = '',
     [string]$ShimPath = '',
@@ -437,6 +437,148 @@ function Get-McpShape {
     return $null
 }
 
+function Get-EntryCommandArray {
+    param($Entry)
+    if ($null -eq $Entry -or $null -eq $Entry.command) { return @() }
+    return @($Entry.command | ForEach-Object { [string]$_ })
+}
+
+function Test-CommandOwnedByShim {
+    param([string[]]$Command, [string]$Shim)
+    if ([string]::IsNullOrWhiteSpace($Shim) -or $Command.Count -eq 0) { return $false }
+    $target = $Shim.Trim().Trim('"')
+    foreach ($part in $Command) {
+        $candidate = ([string]$part).Trim().Trim('"')
+        if ([string]::Equals($candidate, $target, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-EntryObjectFromProperty {
+    param([string]$Text, $Property)
+    $valueText = $Text.Substring($Property.ValueStart, $Property.ValueEnd - $Property.ValueStart)
+    $clean = ConvertTo-ValidationJson $valueText
+    return (ConvertFrom-Json $clean)
+}
+
+function Get-ServerEntryInfo {
+    param([string]$Text, [string]$Shim)
+    $info = [ordered]@{
+        Present = $false
+        Owned   = $false
+        Shape   = 'none'
+        Command = @()
+        FoundShim = ''
+    }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return [pscustomobject]$info }
+    $root = Get-RootProperties $Text
+    $mcpProp = Get-JsoncProperty $root.Properties 'mcp'
+    if ($null -eq $mcpProp) { return [pscustomobject]$info }
+    $mcp = Get-ObjectAtProperty $Text $mcpProp
+
+    $shapes = @()
+    $commands = @()
+    $serversProp = Get-JsoncProperty $mcp.Properties 'servers'
+    if ($null -ne $serversProp) {
+        $servers = Get-ObjectAtProperty $Text $serversProp
+        $serverProp = Get-JsoncProperty $servers.Properties $script:ServerName
+        if ($null -ne $serverProp) {
+            $shapes += 'native'
+            $obj = Get-EntryObjectFromProperty $Text $serverProp
+            $commands += Get-EntryCommandArray $obj
+        }
+    }
+    $legacyProp = Get-JsoncProperty $mcp.Properties $script:ServerName
+    if ($null -ne $legacyProp) {
+        $shapes += 'legacy'
+        $obj = Get-EntryObjectFromProperty $Text $legacyProp
+        $commands += Get-EntryCommandArray $obj
+    }
+
+    if ($shapes.Count -eq 0) { return [pscustomobject]$info }
+    $info.Present = $true
+    $info.Shape = if ($shapes.Count -gt 1) { 'both' } else { $shapes[0] }
+    $info.Command = @($commands)
+    $info.Owned = Test-CommandOwnedByShim -Command $commands -Shim $Shim
+    foreach ($part in $commands) {
+        $candidate = ([string]$part).Trim().Trim('"')
+        if ($candidate -match 'run-mcp-server\.cmd$') { $info.FoundShim = $candidate }
+    }
+    return [pscustomobject]$info
+}
+
+function Remove-OwnedServerEntry {
+    param([string]$Text, [string]$Shim)
+    $root = Get-RootProperties $Text
+    $mcpProp = Get-JsoncProperty $root.Properties 'mcp'
+    if ($null -eq $mcpProp) { return $Text }
+    $mcp = Get-ObjectAtProperty $Text $mcpProp
+    $serversProp = Get-JsoncProperty $mcp.Properties 'servers'
+    if ($null -ne $serversProp) {
+        $servers = Get-ObjectAtProperty $Text $serversProp
+        $serverProp = Get-JsoncProperty $servers.Properties $script:ServerName
+        if ($null -ne $serverProp) {
+            $obj = Get-EntryObjectFromProperty $Text $serverProp
+            if (Test-CommandOwnedByShim -Command (Get-EntryCommandArray $obj) -Shim $Shim) {
+                $Text = Remove-ObjectProperty -Text $Text -Object $servers -Name $script:ServerName
+            }
+        }
+    }
+
+    $root = Get-RootProperties $Text
+    $mcpProp = Get-JsoncProperty $root.Properties 'mcp'
+    if ($null -eq $mcpProp) { return $Text }
+    $mcp = Get-ObjectAtProperty $Text $mcpProp
+    $legacyProp = Get-JsoncProperty $mcp.Properties $script:ServerName
+    if ($null -ne $legacyProp) {
+        $obj = Get-EntryObjectFromProperty $Text $legacyProp
+        if (Test-CommandOwnedByShim -Command (Get-EntryCommandArray $obj) -Shim $Shim) {
+            $Text = Remove-ObjectProperty -Text $Text -Object $mcp -Name $script:ServerName
+        }
+    }
+    return $Text
+}
+
+function Invoke-Verify {
+    param([string]$Dir, [string]$Shim, [string]$OutPath)
+    $info = [pscustomobject]@{
+        Present   = $false
+        Owned     = $false
+        Shape     = 'none'
+        FoundShim = ''
+    }
+    foreach ($name in @('opencode.jsonc', 'opencode.json')) {
+        $path = Join-Path $Dir $name
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $text = Read-ConfigText $path
+        if (-not (Test-JsoncParse $text)) { continue }
+        try {
+            $candidate = Get-ServerEntryInfo -Text $text -Shim $Shim
+        } catch { continue }
+        if ($candidate.Present) {
+            $info = $candidate
+            if ($candidate.Owned) { break }
+        }
+    }
+    $installedValue = if ($info.Present) { '1' } else { '0' }
+    $ownedValue = if ($info.Owned) { '1' } else { '0' }
+    $lines = @(
+        ('present=' + $installedValue),
+        ('owned=' + $ownedValue),
+        ('shape=' + $info.Shape),
+        ('foundShim=' + $info.FoundShim),
+        ('shim=' + $Shim)
+    )
+    if ($OutPath) {
+        $parent = Split-Path -Parent $OutPath
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($OutPath, ($lines -join "`r`n"), $utf8)
+    } else {
+        $lines | Write-Output
+    }
+}
+
 function ConvertTo-ValidationJson {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return '{}' }
@@ -702,7 +844,7 @@ function Invoke-Install {
 }
 
 function Invoke-Remove {
-    param([string]$Dir)
+    param([string]$Dir, [string]$Shim)
     $paths = @((Join-Path $Dir 'opencode.json'), (Join-Path $Dir 'opencode.jsonc'))
     $removed = 0
     foreach ($path in $paths) {
@@ -714,14 +856,23 @@ function Invoke-Remove {
         }
         $presence = Get-ServerPresence $text
         if ($presence -eq 'none') { continue }
-        $after = Remove-ServerEntry -Text $text
+        if ($Shim) {
+            $info = Get-ServerEntryInfo -Text $text -Shim $Shim
+            if (-not $info.Owned) {
+                Write-Log "Server entry is not owned by this installer; left untouched: $path"
+                continue
+            }
+            $after = Remove-OwnedServerEntry -Text $text -Shim $Shim
+        } else {
+            $after = Remove-ServerEntry -Text $text
+        }
         if ($after -ne $text) {
             Write-ConfigText -Path $path -Text $after
             Write-Log "Removed server entry from opencode config: $path"
             $removed++
         }
     }
-    if ($removed -eq 0) { Write-Log 'No opencode server entry found to remove' }
+    if ($removed -eq 0) { Write-Log 'No owned opencode server entry found to remove' }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -731,7 +882,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ([string]::IsNullOrWhiteSpace($ShimPath)) { throw 'ShimPath is required for Install' }
             Invoke-Install -Dir $resolvedDir -Shim $ShimPath -IsNative ([bool]$Native)
         } elseif ($Action -eq 'Remove') {
-            Invoke-Remove -Dir $resolvedDir
+            Invoke-Remove -Dir $resolvedDir -Shim $ShimPath
+        } elseif ($Action -eq 'Verify') {
+            Invoke-Verify -Dir $resolvedDir -Shim $ShimPath -OutPath $OutputPath
         } else {
             Invoke-Detect -Dir $resolvedDir -OutPath $OutputPath
         }

@@ -394,7 +394,7 @@ begin
 end;
 
 procedure RemoveFromClaudeDesktop;
-var P, C: String; SL: TStringList; S, E: Integer;
+var P, C, Block: String; SL: TStringList; S, E: Integer;
 begin
   P := GetAppDataDir + '\\Claude\\claude_desktop_config.json';
   if not FileExists(P) then Exit;
@@ -407,6 +407,11 @@ begin
     if E = 0 then Exit;
     E := S + E - 1;
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
+    Block := Copy(C, S, E - S + 1);
+    if Pos(ShimPathJson(), Block) = 0 then begin
+      Log('Claude Desktop entry is not owned by this installer; left untouched');
+      Exit;
+    end;
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
     GuardedRemoveConfig(SL, P, C);
@@ -449,7 +454,7 @@ begin
 end;
 
 procedure RemoveFromCursor;
-var P, C: String; SL: TStringList; S, E: Integer;
+var P, C, Block: String; SL: TStringList; S, E: Integer;
 begin
   P := GetUserProfilePath + '\\.cursor\\mcp.json';
   if not FileExists(P) then Exit;
@@ -462,6 +467,11 @@ begin
     if E = 0 then Exit;
     E := S + E - 1;
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
+    Block := Copy(C, S, E - S + 1);
+    if Pos(ShimPathJson(), Block) = 0 then begin
+      Log('Cursor entry is not owned by this installer; left untouched');
+      Exit;
+    end;
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
     GuardedRemoveConfig(SL, P, C);
@@ -504,7 +514,7 @@ begin
 end;
 
 procedure RemoveFromAnythingLLM;
-var P, C: String; SL: TStringList; S, E: Integer;
+var P, C, Block: String; SL: TStringList; S, E: Integer;
 begin
   P := GetAppDataDir + '\\anythingllm-desktop\\storage\\plugins\\anythingllm_mcp_servers.json';
   if not FileExists(P) then Exit;
@@ -517,6 +527,11 @@ begin
     if E = 0 then Exit;
     E := S + E - 1;
     if (E + 1 <= Length(C)) and (C[E + 1] = ',') then Inc(E);
+    Block := Copy(C, S, E - S + 1);
+    if Pos(ShimPathJson(), Block) = 0 then begin
+      Log('AnythingLLM entry is not owned by this installer; left untouched');
+      Exit;
+    end;
     Delete(C, S, E - S + 1);
     CleanTrailingCommas(C);
     GuardedRemoveConfig(SL, P, C);

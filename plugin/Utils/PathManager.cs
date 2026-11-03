@@ -64,7 +64,8 @@ namespace revit_mcp_plugin.Utils
         }
         /// <summary>
         /// Creates a default command registry file by scanning command.json files
-        /// in Commands subdirectories. All discovered commands are enabled by default.
+        /// in Commands subdirectories. All discovered commands are disabled by
+        /// default so commands are always an explicit user opt-in.
         /// </summary>
         /// <param name="filePath">Path where to create the file</param>
         private static void CreateDefaultCommandRegistryFile(string filePath)
@@ -140,7 +141,7 @@ namespace revit_mcp_plugin.Utils
                                     CommandName = commandName,
                                     Description = description,
                                     AssemblyPath = dllBasePath,
-                                    Enabled = true,
+                                    Enabled = false,
                                     SupportedRevitVersions = supportedVersions.ToArray(),
                                     Developer = developer
                                 });
