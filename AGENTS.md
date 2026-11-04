@@ -197,9 +197,9 @@ The original Roslyn `.csx` prototype scripts (detectors, fixers, spacing regular
 
 ## Roadmap (next up)
 
-Ordered backlog (v1.2.1 released: DWG walk caps, Roslyn conflict guards, dynamic tool advertisement, first-run prompt fix, OpenCode 2 installer/config support, suite alignment):
+Ordered backlog (v1.2.2 released: DWG walk caps, Roslyn conflict guards, dynamic tool advertisement, first-run prompt fix, OpenCode 2 installer/config support, suite alignment):
 
-1. **v1.2.1 - RELEASED.** Ships the completed work above plus the suite direct-deploy contract, disabled-by-default registry, ownership-aware client uninstall, and 2020-2026 standalone installer.
+1. **v1.2.2 - RELEASED.** Re-release of v1.2.1 for the SMS-Toolkit suite alignment (same plugin/server behavior; refreshed version metadata and release assets).
 
 2. **Out-of-process compile host — DEFERRED (recorded for future development; decided not to pursue in this cycle)**. Design captured from the v1.2 scoping discussion so it can be picked up cold:
    - **Motivation**: removes the ~591 MB Roslyn compile residency from Revit's process; kills the toggle-time `API_ERROR` journal noise (the Roslyn chain leaves the addin folder → nothing for Revit's static checker to flag) and the whole binding-conflict class; compile-path crashes/hangs (Roslyn OOM, parser blowups) take down the host instead of Revit; compile can move off Revit's UI thread (run on the WebSocket dispatch thread *before* raising the ExternalEvent — the 60s wait then wraps only execution).

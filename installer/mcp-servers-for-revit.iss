@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=MCP Servers for Revit
-AppVersion=1.2.1
+AppVersion=1.2.2
 AppPublisher=MCP Servers for Revit
 AppPublisherURL=https://github.com/chris4d/mcp-servers-for-revit
 DefaultDirName={autopf}\MCP Servers for Revit
